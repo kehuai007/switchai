@@ -1,0 +1,33 @@
+# 二进制文件
+switchai
+switchai.exe
+dist/
+
+# 配置和数据文件（包含敏感信息）
+config.json
+providers.json
+history.json
+
+# 日志目录
+logs/
+
+# Go 相关
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 临时文件
+*.log
+*.tmp

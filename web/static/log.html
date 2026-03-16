@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SwitchAI - Token 统计日志</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #333; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+        .nav-links { display: flex; gap: 15px; }
+        .nav-links a { color: #667eea; text-decoration: none; font-size: 16px; padding: 8px 16px; border-radius: 4px; transition: all 0.3s; }
+        .nav-links a:hover { background: #667eea; color: white; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; }
+        .stat-label { font-size: 14px; opacity: 0.9; margin-bottom: 5px; }
+        .stat-value { font-size: 28px; font-weight: bold; }
+        .provider-stats { display: grid; gap: 15px; }
+        .provider-card { border: 2px solid #e0e0e0; border-radius: 8px; padding: 20px; transition: all 0.3s; }
+        .provider-card:hover { border-color: #667eea; box-shadow: 0 4px 8px rgba(102, 126, 234, 0.2); }
+        .provider-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .provider-name { font-size: 18px; font-weight: bold; color: #333; }
+        .provider-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+        .provider-stat-item { background: #f8f9fa; padding: 12px; border-radius: 6px; }
+        .provider-stat-label { font-size: 12px; color: #666; margin-bottom: 4px; }
+        .provider-stat-value { font-size: 20px; font-weight: bold; color: #333; }
+        button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
+        .btn-danger { background: #f56565; color: white; }
+        .btn-danger:hover { background: #e53e3e; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover { background: #5568d3; }
+        .records-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .records-table th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #e0e0e0; }
+        .records-table td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+        .records-table tr:hover { background: #f8f9fa; }
+        .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .badge-stream { background: #48bb78; color: white; }
+        .badge-non-stream { background: #4299e1; color: white; }
+        .cost { color: #f56565; font-weight: 600; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .log-link { color: #667eea; cursor: pointer; text-decoration: underline; }
+        .log-link:hover { color: #5568d3; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal-content { background: white; margin: 2% auto; padding: 0; border-radius: 8px; width: 90%; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; }
+        .modal-header { padding: 20px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center; }
+        .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+        .close { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: #000; }
+        .detail-section { margin-bottom: 20px; }
+        .detail-section h3 { color: #333; margin-bottom: 10px; font-size: 16px; }
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .detail-item { background: #f8f9fa; padding: 12px; border-radius: 6px; }
+        .detail-label { font-size: 12px; color: #666; margin-bottom: 4px; }
+        .detail-value { font-size: 14px; font-weight: 600; color: #333; word-break: break-all; }
+        .code-block { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 6px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word; max-height: 400px; }
+        .json-key { color: #66d9ef; }
+        .json-string { color: #a6e22e; }
+        .json-number { color: #ae81ff; }
+        .json-boolean { color: #fd971f; }
+        .json-null { color: #f92672; }
+        .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 20px; }
+        .pagination button { padding: 8px 12px; border: 1px solid #e0e0e0; background: white; border-radius: 4px; cursor: pointer; }
+        .pagination button:hover:not(:disabled) { background: #667eea; color: white; }
+        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pagination span { color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            <span>📊 Token 统计日志</span>
+            <div class="nav-links">
+                <a href="/">← 返回首页</a>
+            </div>
+        </h1>
+
+        <div class="card">
+            <div class="section-header">
+                <h2>总体统计</h2>
+                <button class="btn-danger" onclick="resetAllStats()">🗑️ 清空所有统计</button>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">总输入 Token</div>
+                    <div class="stat-value" id="totalInput">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">总输出 Token</div>
+                    <div class="stat-value" id="totalOutput">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">总计 Token</div>
+                    <div class="stat-value" id="totalTokens">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">总花费</div>
+                    <div class="stat-value" id="totalCost">$0.00</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 20px;">供应商统计</h2>
+            <div class="provider-stats" id="providerStats"></div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 15px;">最近请求记录</h2>
+            <table class="records-table">
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>供应商</th>
+                        <th>模型</th>
+                        <th>类型</th>
+                        <th>输入Token</th>
+                        <th>输出Token</th>
+                        <th>总Token</th>
+                        <th>花费</th>
+                        <th>耗时</th>
+                        <th>日志</th>
+                    </tr>
+                </thead>
+                <tbody id="recordsTable"></tbody>
+            </table>
+            <div class="pagination" id="recordsPagination"></div>
+        </div>
+    </div>
+
+    <!-- Modal for request details -->
+    <div id="detailModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>请求详情</h2>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let currentPage = 1;
+        let pageSize = 20;
+        let totalRecords = 0;
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            const ms = String(date.getMilliseconds()).padStart(3, '0');
+            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatCost(cost) {
+            return '$' + cost.toFixed(6);
+        }
+
+        async function loadHistory(page = 1) {
+            try {
+                const res = await fetch(`/api/history?page=${page}&page_size=${pageSize}`);
+                const data = await res.json();
+                currentPage = page;
+                totalRecords = data.total;
+                updateHistoryTable(data.records);
+                updatePagination();
+            } catch (err) {
+                console.error('Failed to load history:', err);
+            }
+        }
+
+        function updateHistoryTable(records) {
+            const recordsTable = document.getElementById('recordsTable');
+            if (records && records.length > 0) {
+                recordsTable.innerHTML = records.map(record => `
+                    <tr>
+                        <td>${formatTime(record.timestamp)}</td>
+                        <td>${record.provider || '-'}</td>
+                        <td>${record.model || '-'}</td>
+                        <td><span class="badge badge-non-stream">HTTP</span></td>
+                        <td>${record.input_tokens || 0}</td>
+                        <td>${record.output_tokens || 0}</td>
+                        <td>${record.total_tokens || 0}</td>
+                        <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
+                        <td>${record.duration_ms}ms</td>
+                        <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
+                    </tr>
+                `).join('');
+            } else {
+                recordsTable.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+            }
+        }
+
+        function updatePagination() {
+            const totalPages = Math.ceil(totalRecords / pageSize);
+            const pagination = document.getElementById('recordsPagination');
+
+            if (totalPages <= 1) {
+                pagination.innerHTML = '';
+                return;
+            }
+
+            let html = `
+                <button ${currentPage === 1 ? 'disabled' : ''} onclick="loadHistory(1)">首页</button>
+                <button ${currentPage === 1 ? 'disabled' : ''} onclick="loadHistory(${currentPage - 1})">上一页</button>
+                <span>第 ${currentPage} / ${totalPages} 页 (共 ${totalRecords} 条)</span>
+                <button ${currentPage === totalPages ? 'disabled' : ''} onclick="loadHistory(${currentPage + 1})">下一页</button>
+                <button ${currentPage === totalPages ? 'disabled' : ''} onclick="loadHistory(${totalPages})">末页</button>
+            `;
+            pagination.innerHTML = html;
+        }
+
+        async function showDetail(id) {
+            try {
+                const res = await fetch(`/api/history/${id}`);
+                const record = await res.json();
+
+                const modalBody = document.getElementById('modalBody');
+                modalBody.innerHTML = `
+                    <div class="detail-section">
+                        <h3>基本信息</h3>
+                        <div class="detail-grid">
+                            <div class="detail-item">
+                                <div class="detail-label">请求时间</div>
+                                <div class="detail-value">${formatTime(record.timestamp)}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">请求方法</div>
+                                <div class="detail-value">${record.method}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">请求路径</div>
+                                <div class="detail-value">${record.path}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">供应商</div>
+                                <div class="detail-value">${record.provider || '-'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">模型</div>
+                                <div class="detail-value">${record.model || '-'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">状态码</div>
+                                <div class="detail-value">${record.status_code}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">耗时</div>
+                                <div class="detail-value">${record.duration_ms} ms</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">请求大小</div>
+                                <div class="detail-value">${formatBytes(record.request_size || 0)}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">响应大小</div>
+                                <div class="detail-value">${formatBytes(record.response_size || 0)}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="detail-section">
+                        <h3>请求体</h3>
+                        <div class="code-block" id="requestBodyBlock"></div>
+                    </div>
+
+                    <div class="detail-section">
+                        <h3>响应体</h3>
+                        <div class="code-block" id="responseBodyBlock"></div>
+                    </div>
+                `;
+
+                // 格式化并显示请求体
+                formatJsonContent('requestBodyBlock', record.request_body);
+
+                // 格式化并显示响应体
+                formatJsonContent('responseBodyBlock', record.response_body);
+
+                document.getElementById('detailModal').style.display = 'flex';
+            } catch (err) {
+                alert('加载详情失败: ' + err.message);
+            }
+        }
+
+        function formatJsonContent(elementId, content) {
+            const element = document.getElementById(elementId);
+            if (!content || content === '无') {
+                element.textContent = '无';
+                return;
+            }
+
+            try {
+                // 尝试解析为JSON
+                const parsed = JSON.parse(content);
+                element.innerHTML = syntaxHighlight(JSON.stringify(parsed, null, 2));
+            } catch (e) {
+                // 如果不是有效的JSON，直接显示原文
+                element.textContent = content;
+            }
+        }
+
+        function syntaxHighlight(json) {
+            json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+                let cls = 'json-number';
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        cls = 'json-key';
+                    } else {
+                        cls = 'json-string';
+                    }
+                } else if (/true|false/.test(match)) {
+                    cls = 'json-boolean';
+                } else if (/null/.test(match)) {
+                    cls = 'json-null';
+                }
+                return '<span class="' + cls + '">' + match + '</span>';
+            });
+        }
+
+        function closeModal() {
+            document.getElementById('detailModal').style.display = 'none';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        window.onclick = function(event) {
+            const modal = document.getElementById('detailModal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('detailModal').style.display = 'none';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        window.onclick = function(event) {
+            const modal = document.getElementById('detailModal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                updateStats(data);
+            } catch (err) {
+                console.error('Failed to load stats:', err);
+            }
+        }
+
+        function updateStats(data) {
+            document.getElementById('totalInput').textContent = (data.total_input_tokens || 0).toLocaleString();
+            document.getElementById('totalOutput').textContent = (data.total_output_tokens || 0).toLocaleString();
+            document.getElementById('totalTokens').textContent = (data.total_tokens || 0).toLocaleString();
+            document.getElementById('totalCost').textContent = formatCost(data.total_cost || 0);
+
+            // 更新供应商统计
+            const providerStatsDiv = document.getElementById('providerStats');
+            if (data.provider_stats && data.provider_stats.length > 0) {
+                providerStatsDiv.innerHTML = data.provider_stats.map(provider => `
+                    <div class="provider-card">
+                        <div class="provider-header">
+                            <div class="provider-name">${provider.provider_name || provider.provider_id}</div>
+                            <button class="btn-danger" onclick="resetProviderStats('${provider.provider_id}')">🗑️ 清空</button>
+                        </div>
+                        <div class="provider-stats-grid">
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">输入Token</div>
+                                <div class="provider-stat-value">${provider.input_tokens.toLocaleString()}</div>
+                            </div>
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">输出Token</div>
+                                <div class="provider-stat-value">${provider.output_tokens.toLocaleString()}</div>
+                            </div>
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">总Token</div>
+                                <div class="provider-stat-value">${provider.total_tokens.toLocaleString()}</div>
+                            </div>
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">请求次数</div>
+                                <div class="provider-stat-value">${provider.request_count}</div>
+                            </div>
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">总花费</div>
+                                <div class="provider-stat-value cost">${formatCost(provider.total_cost)}</div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                providerStatsDiv.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">暂无统计数据</p>';
+            }
+
+            // 更新最近记录
+            const recordsTable = document.getElementById('recordsTable');
+            if (data.recent_records && data.recent_records.length > 0) {
+                // Don't update table here, use loadHistory instead
+            } else {
+                recordsTable.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+            }
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.provider_id) {
+                    // 单条记录更新
+                    loadStats();
+                } else {
+                    // 完整统计数据
+                    updateStats(data);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected, reconnecting...');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        async function resetAllStats() {
+            if (!confirm('确定要清空所有统计数据吗？此操作不可恢复！')) {
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/stats/reset', { method: 'POST' });
+                if (res.ok) {
+                    alert('✅ 所有统计数据已清空');
+                    await loadStats();
+                } else {
+                    alert('❌ 清空失败');
+                }
+            } catch (err) {
+                alert('❌ 清空失败: ' + err.message);
+            }
+        }
+
+        async function resetProviderStats(providerId) {
+            if (!confirm('确定要清空该供应商的统计数据吗？此操作不可恢复！')) {
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/stats/reset/${providerId}`, { method: 'POST' });
+                if (res.ok) {
+                    alert('✅ 供应商统计数据已清空');
+                    await loadStats();
+                } else {
+                    alert('❌ 清空失败');
+                }
+            } catch (err) {
+                alert('❌ 清空失败: ' + err.message);
+            }
+        }
+
+        // 初始加载
+        loadStats();
+        loadHistory();
+        connectWebSocket();
+    </script>
+</body>
+</html>
