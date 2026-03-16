@@ -64,6 +64,12 @@ func proxyHandler(c *gin.Context) {
 			// 获取请求的模型名称
 			if model, ok := requestBody["model"].(string); ok {
 				requestedModel = model
+
+				// 如果提供商配置了模型列表，使用第一个模型替换
+				if len(provider.Models) > 0 {
+					requestBody["model"] = provider.Models[0]
+					requestedModel = provider.Models[0]
+				}
 				log.Printf("Request model: %s", model)
 			}
 
