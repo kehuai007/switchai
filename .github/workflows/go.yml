@@ -1,0 +1,125 @@
+# 工作流名称
+name: Build SwitchAI Binaries
+
+# 触发条件：
+# 1. 推送以v开头的Tag（如v1.0.0）时自动执行
+# 2. 手动在GitHub Actions页面触发（方便测试）
+on:
+  push:
+    tags:
+      - 'v*'  # 匹配 v0.1.0、v1.2.3 等版本Tag
+  workflow_dispatch:  # 手动触发开关
+
+# 定义作业
+jobs:
+  build:
+    # 作业名称
+    name: Build for Windows/Linux
+    # 运行环境（Ubuntu，兼容跨平台编译）
+    runs-on: ubuntu-latest
+    # 禁用并行（单任务编译双平台）
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Windows amd64 编译配置
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            binary_name: switchai-windows-amd64.exe
+          # Linux amd64 编译配置
+          - goos: linux
+            goarch: amd64
+            ext: ""
+            binary_name: switchai-linux-amd64
+
+    steps:
+      # 步骤1：拉取代码到构建环境
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 步骤2：安装Go环境（匹配项目使用的Go版本，建议指定具体版本如1.21）
+      - name: Set Up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'  # 按需修改为项目实际使用的Go版本
+          cache: true  # 启用Go模块缓存，加速构建
+
+      # 步骤3：创建dist目录（和build.bat保持一致的输出目录）
+      - name: Create Dist Directory
+        run: mkdir -p dist
+
+      # 步骤4：跨平台编译二进制（复用build.bat的编译参数：CGO_ENABLED=0、-ldflags="-s -w"）
+      - name: Build Binary (${{ matrix.goos }}/${{ matrix.goarch }})
+        run: |
+          # 设置Go跨平台编译环境变量
+          export CGO_ENABLED=0
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
+          # 编译（参数和build.bat完全一致：精简编译、无CGO）
+          go build -ldflags="-s -w" -o dist/${{ matrix.binary_name }}
+        # 编译失败时立即终止
+        continue-on-error: false
+
+      # 步骤5：验证编译产物是否存在（可选，增加鲁棒性）
+      - name: Verify Binary
+        run: |
+          ls -la dist/
+          # 检查文件是否存在
+          if [ ! -f "dist/${{ matrix.binary_name }}" ]; then
+            echo "ERROR: Binary ${{ matrix.binary_name }} not found!"
+            exit 1
+          fi
+
+      # 步骤6：上传二进制到Actions临时产物（供后续Release使用）
+      - name: Upload Binary to Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: dist/${{ matrix.binary_name }}
+          retention-days: 1  # 临时产物保留1天，节省空间
+
+  # 作业2：创建Release并上传所有二进制文件
+  release:
+    # 依赖build作业完成后执行
+    needs: build
+    # 运行环境
+    runs-on: ubuntu-latest
+    # 仅在Tag推送时执行（手动触发时跳过Release）
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      # 步骤1：下载所有编译好的二进制文件
+      - name: Download All Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist  # 下载到dist目录
+
+      # 步骤2：创建GitHub Release并上传二进制
+      - name: Create Release & Upload Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          # Release标题（使用Tag名称）
+          name: ${{ github.ref_name }}
+          # Release描述（可自定义，或读取CHANGELOG.md）
+          body: |
+            ## SwitchAI ${{ github.ref_name }} 发布
+            自动构建的跨平台二进制文件：
+            - Windows (amd64): switchai-windows-amd64.exe
+            - Linux (amd64): switchai-linux-amd64
+            
+            使用方式：
+            - Windows: switchai-windows-amd64.exe -p 7777
+            - Linux:   ./switchai-linux-amd64 -p 7777
+            
+            服务管理（Windows）：
+            - 安装服务：switchai-windows-amd64.exe -install -p 7777
+            - 卸载服务：switchai-windows-amd64.exe -uninstall
+          # 标记预发布（可选，正式版可注释掉）
+          # prerelease: true
+          # 上传dist目录下的所有二进制文件
+          files: |
+            dist/switchai-windows-amd64.exe
+            dist/switchai-linux-amd64
+        # 必要的GitHub Token（Actions自动提供，无需手动配置）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
