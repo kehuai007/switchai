@@ -10,9 +10,9 @@ on:
       - 'v*'  # 匹配 v0.1.0、v1.2.3 等版本Tag
   workflow_dispatch:  # 手动触发开关
 
-# 全局环境变量
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 强制使用Node.js 24，避免弃用警告
+# 权限配置：允许创建Release和上传文件
+permissions:
+  contents: write  # 允许创建Release和上传资产
 
 # 定义作业
 jobs:
