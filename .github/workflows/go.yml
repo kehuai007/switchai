@@ -10,6 +10,10 @@ on:
       - 'v*'  # 匹配 v0.1.0、v1.2.3 等版本Tag
   workflow_dispatch:  # 手动触发开关
 
+# 全局环境变量
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 强制使用Node.js 24，避免弃用警告
+
 # 定义作业
 jobs:
   build:
@@ -93,10 +97,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist  # 下载到dist目录
+          merge-multiple: true  # 合并所有artifact到同一目录，避免子目录嵌套
 
-      # 步骤2：创建GitHub Release并上传二进制
+      # 步骤2：验证下载的文件
+      - name: List Downloaded Files
+        run: ls -la dist/
+
+      # 步骤3：创建GitHub Release并上传二进制
       - name: Create Release & Upload Assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           # Release标题（使用Tag名称）
           name: ${{ github.ref_name }}
@@ -106,11 +115,11 @@ jobs:
             自动构建的跨平台二进制文件：
             - Windows (amd64): switchai-windows-amd64.exe
             - Linux (amd64): switchai-linux-amd64
-            
+
             使用方式：
             - Windows: switchai-windows-amd64.exe -p 7777
             - Linux:   ./switchai-linux-amd64 -p 7777
-            
+
             服务管理（Windows）：
             - 安装服务：switchai-windows-amd64.exe -install -p 7777
             - 卸载服务：switchai-windows-amd64.exe -uninstall
@@ -118,8 +127,7 @@ jobs:
           # prerelease: true
           # 上传dist目录下的所有二进制文件
           files: |
-            dist/switchai-windows-amd64.exe
-            dist/switchai-linux-amd64
+            dist/*
         # 必要的GitHub Token（Actions自动提供，无需手动配置）
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
