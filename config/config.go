@@ -8,14 +8,14 @@ import (
 )
 
 type Provider struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	BaseURL   string   `json:"base_url"`
-	APIKey    string   `json:"api_key"`
-	Models    []string `json:"models"`
-	IsActive  bool     `json:"is_active"`
-	CreatedAt string   `json:"created_at"`
-	Order     int      `json:"order"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	BaseURL   string `json:"base_url"`
+	APIKey    string `json:"api_key"`
+	Model     string `json:"model"`
+	IsActive  bool   `json:"is_active"`
+	CreatedAt string `json:"created_at"`
+	Order     int    `json:"order"`
 }
 
 type Config struct {

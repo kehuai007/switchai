@@ -47,13 +47,12 @@ func proxyHandler(c *gin.Context) {
 		return
 	}
 
-	// 保存原始请求体用于历史记录
-	originalRequestBody := string(bodyBytes)
-
 	// 解析请求体以检查是否为流式请求，并替换模型参数
 	var requestBody map[string]interface{}
 	isStream := false
 	requestedModel := "unknown"
+	modifiedRequestBody := string(bodyBytes) // 用于历史记录的请求体
+
 	if len(bodyBytes) > 0 && json.Valid(bodyBytes) {
 		if err := json.Unmarshal(bodyBytes, &requestBody); err == nil {
 			// 检查是否为流式请求
@@ -64,17 +63,19 @@ func proxyHandler(c *gin.Context) {
 			// 获取请求的模型名称
 			if model, ok := requestBody["model"].(string); ok {
 				requestedModel = model
+				log.Printf("Original request model: %s", model)
 
-				// 如果提供商配置了模型列表，使用第一个模型替换
-				if len(provider.Models) > 0 {
-					requestBody["model"] = provider.Models[0]
-					requestedModel = provider.Models[0]
+				// 使用供应商配置的模型替换请求中的模型
+				if provider.Model != "" {
+					requestBody["model"] = provider.Model
+					requestedModel = provider.Model
+					log.Printf("Replaced with provider model: %s", provider.Model)
 				}
-				log.Printf("Request model: %s", model)
 			}
 
 			// 重新序列化请求体
 			bodyBytes, _ = json.Marshal(requestBody)
+			modifiedRequestBody = string(bodyBytes) // 保存修改后的请求体用于历史记录
 		}
 	}
 
@@ -117,12 +118,12 @@ func proxyHandler(c *gin.Context) {
 
 	// 处理流式响应
 	if isStream {
-		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, originalRequestBody, c.Request.Header, requestedModel)
+		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel)
 		return
 	}
 
 	// 处理非流式响应
-	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, originalRequestBody, c.Request.Header, requestedModel)
+	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel)
 }
 
 // handleStreamResponse 处理流式响应（SSE）
