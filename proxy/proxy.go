@@ -73,6 +73,18 @@ func proxyHandler(c *gin.Context) {
 				}
 			}
 
+			// 如果供应商使用 OpenAI 格式，需要将 Claude 格式转换为 OpenAI 格式
+			if provider.IsOpenAIFormat {
+				requestBody = convertClaudeToOpenAI(requestBody)
+				// 智能构建 URL，避免路径重复
+				baseURL := strings.TrimSuffix(provider.BaseURL, "/")
+				if strings.HasSuffix(baseURL, "/v1") {
+					targetURL = baseURL + "/chat/completions"
+				} else {
+					targetURL = baseURL + "/v1/chat/completions"
+				}
+			}
+
 			// 重新序列化请求体
 			bodyBytes, _ = json.Marshal(requestBody)
 			modifiedRequestBody = string(bodyBytes) // 保存修改后的请求体用于历史记录
@@ -109,8 +121,13 @@ func proxyHandler(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	// 复制响应头
+	// 复制响应头，但跳过编码相关的头
+	// Go 的 http.Client 会自动解压 gzip，所以不应该转发 Content-Encoding
 	for key, values := range resp.Header {
+		// 跳过这些头，因为内容已经被自动解压或长度会改变
+		if key == "Content-Encoding" || key == "Content-Length" {
+			continue
+		}
 		for _, value := range values {
 			c.Header(key, value)
 		}
@@ -153,46 +170,105 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
-		if _, err := c.Writer.Write(line); err != nil {
-			return
-		}
-		if _, err := c.Writer.Write([]byte("\n")); err != nil {
-			return
-		}
-		flusher.Flush()
+		// 如果是 OpenAI 格式，需要转换为 Claude 格式
+		if provider.IsOpenAIFormat {
+			lineStr := string(line)
+			if strings.HasPrefix(lineStr, "data: ") {
+				data := strings.TrimPrefix(lineStr, "data: ")
+				if data == "[DONE]" {
+					// 转换为 Claude 格式的结束标记
+					claudeDone := "data: {\"type\":\"message_stop\"}\n\n"
+					if _, err := c.Writer.Write([]byte(claudeDone)); err != nil {
+						return
+					}
+					flusher.Flush()
+					responseBody.WriteString(claudeDone)
+					continue
+				}
 
-		// Collect response body
-		responseBody.Write(line)
-		responseBody.WriteString("\n")
+				var openaiChunk map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &openaiChunk); err == nil {
+					// 提取模型信息
+					if m, ok := openaiChunk["model"].(string); ok && m != "" {
+						model = m
+					}
+
+					// 转换为 Claude 格式的流式响应
+					claudeChunk := convertOpenAIStreamToClaude(openaiChunk)
+					if claudeData, err := json.Marshal(claudeChunk); err == nil {
+						claudeLine := "data: " + string(claudeData) + "\n\n"
+						if _, err := c.Writer.Write([]byte(claudeLine)); err != nil {
+							return
+						}
+						flusher.Flush()
+						responseBody.WriteString(claudeLine)
+
+						// 提取 usage 信息
+						if usage, ok := claudeChunk["usage"].(map[string]interface{}); ok {
+							if input, ok := usage["input_tokens"].(int); ok {
+								inputTokens = input
+							}
+							if output, ok := usage["output_tokens"].(int); ok {
+								outputTokens = output
+							}
+						}
+					}
+				}
+			} else {
+				// 非 data 行直接转发
+				if _, err := c.Writer.Write(line); err != nil {
+					return
+				}
+				if _, err := c.Writer.Write([]byte("\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+				responseBody.Write(line)
+				responseBody.WriteString("\n")
+			}
+		} else {
+			// Claude 格式直接转发
+			if _, err := c.Writer.Write(line); err != nil {
+				return
+			}
+			if _, err := c.Writer.Write([]byte("\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+
+			// Collect response body
+			responseBody.Write(line)
+			responseBody.WriteString("\n")
+
+			lineStr := string(line)
+			if strings.HasPrefix(lineStr, "data: ") {
+				data := strings.TrimPrefix(lineStr, "data: ")
+				if data == "[DONE]" {
+					continue
+				}
+
+				var streamData map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &streamData); err == nil {
+					// 提取模型信息
+					if m, ok := streamData["model"].(string); ok && m != "" {
+						model = m
+					}
+					// 提取 usage 信息
+					if usage, ok := streamData["usage"].(map[string]interface{}); ok {
+						if input, ok := usage["input_tokens"].(float64); ok {
+							inputTokens = int(input)
+						}
+						if output, ok := usage["output_tokens"].(float64); ok {
+							outputTokens = int(output)
+						}
+					}
+				}
+			}
+		}
 
 		if firstToken {
 			firstTokenTime = time.Now()
 			firstToken = false
-		}
-
-		lineStr := string(line)
-		if strings.HasPrefix(lineStr, "data: ") {
-			data := strings.TrimPrefix(lineStr, "data: ")
-			if data == "[DONE]" {
-				continue
-			}
-
-			var streamData map[string]interface{}
-			if err := json.Unmarshal([]byte(data), &streamData); err == nil {
-				// 提取模型信息
-				if m, ok := streamData["model"].(string); ok && m != "" {
-					model = m
-				}
-				// 提取 usage 信息
-				if usage, ok := streamData["usage"].(map[string]interface{}); ok {
-					if input, ok := usage["input_tokens"].(float64); ok {
-						inputTokens = int(input)
-					}
-					if output, ok := usage["output_tokens"].(float64); ok {
-						outputTokens = int(output)
-					}
-				}
-			}
 		}
 	}
 
@@ -252,44 +328,70 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	var inputTokens, outputTokens int
 	var cost float64
 
-	// 尝试解析响应以获取 token 使用情况和模型信息
-	if resp.StatusCode == 200 && len(respBody) > 0 {
-		var result struct {
-			Model string `json:"model"`
-			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
+	// 如果是 OpenAI 格式的响应，需要转换为 Claude 格式
+	var finalRespBody []byte
+	if provider.IsOpenAIFormat && resp.StatusCode == 200 && len(respBody) > 0 {
+		var openaiResp map[string]interface{}
+		if err := json.Unmarshal(respBody, &openaiResp); err == nil {
+			// 提取 token 信息
+			if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
+				if prompt, ok := usage["prompt_tokens"].(float64); ok {
+					inputTokens = int(prompt)
+				}
+				if completion, ok := usage["completion_tokens"].(float64); ok {
+					outputTokens = int(completion)
+				}
+			}
+			if m, ok := openaiResp["model"].(string); ok && m != "" {
+				model = m
+			}
+
+			// 转换为 Claude 格式
+			claudeResp := convertOpenAIToClaude(openaiResp)
+			finalRespBody, _ = json.Marshal(claudeResp)
+		} else {
+			finalRespBody = respBody
 		}
-		if err := json.Unmarshal(respBody, &result); err == nil {
-			duration := time.Since(startTime).Milliseconds()
-
-			// 如果响应中有模型信息，使用响应中的模型
-			if result.Model != "" {
-				model = result.Model
+	} else {
+		finalRespBody = respBody
+		// 尝试解析响应以获取 token 使用情况和模型信息（Claude 格式）
+		if resp.StatusCode == 200 && len(respBody) > 0 {
+			var result struct {
+				Model string `json:"model"`
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
 			}
+			if err := json.Unmarshal(respBody, &result); err == nil {
+				// 如果响应中有模型信息，使用响应中的模型
+				if result.Model != "" {
+					model = result.Model
+				}
 
-			// 如果模型仍然为空，使用默认值
-			if model == "" {
-				model = "unknown"
+				// 保存 token 信息
+				inputTokens = result.Usage.InputTokens
+				outputTokens = result.Usage.OutputTokens
 			}
-
-			// 保存 token 信息
-			inputTokens = result.Usage.InputTokens
-			outputTokens = result.Usage.OutputTokens
-
-			// 记录统计信息（即使 token 为 0 也记录）
-			cost = calculateCost(model, inputTokens, outputTokens)
-			stats.RecordUsage(provider.ID, provider.Name, model, "non-stream", "claude",
-				inputTokens, outputTokens, cost, duration, 0)
 		}
 	}
 
+	// 如果模型仍然为空，使用默认值
+	if model == "" {
+		model = "unknown"
+	}
+
+	// 记录统计信息
+	duration := time.Since(startTime).Milliseconds()
+	cost = calculateCost(model, inputTokens, outputTokens)
+	stats.RecordUsage(provider.ID, provider.Name, model, "non-stream", "claude",
+		inputTokens, outputTokens, cost, duration, 0)
+
 	// 格式化响应体 JSON（如果是有效的 JSON）
-	formattedRespBody := respBody
-	if json.Valid(respBody) {
+	formattedRespBody := finalRespBody
+	if json.Valid(finalRespBody) {
 		var jsonData interface{}
-		if err := json.Unmarshal(respBody, &jsonData); err == nil {
+		if err := json.Unmarshal(finalRespBody, &jsonData); err == nil {
 			if formatted, err := json.MarshalIndent(jsonData, "", "  "); err == nil {
 				formattedRespBody = formatted
 			}
@@ -297,7 +399,6 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	}
 
 	// Save to history
-	duration := time.Since(startTime).Milliseconds()
 	history.AddRecord(history.RequestRecord{
 		ID:              requestID,
 		Timestamp:       startTime,
@@ -335,4 +436,158 @@ func calculateCost(model string, inputTokens, outputTokens int) float64 {
 		inputCost, outputCost = 0.000003, 0.000015
 	}
 	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
+}
+
+// convertClaudeToOpenAI 将 Claude 格式的请求转换为 OpenAI 格式
+func convertClaudeToOpenAI(claudeReq map[string]interface{}) map[string]interface{} {
+	openaiReq := make(map[string]interface{})
+
+	// 复制基本字段
+	if model, ok := claudeReq["model"]; ok {
+		openaiReq["model"] = model
+	}
+	if stream, ok := claudeReq["stream"]; ok {
+		openaiReq["stream"] = stream
+	}
+	if temp, ok := claudeReq["temperature"]; ok {
+		openaiReq["temperature"] = temp
+	}
+	if topP, ok := claudeReq["top_p"]; ok {
+		openaiReq["top_p"] = topP
+	}
+
+	// 转换 max_tokens
+	if maxTokens, ok := claudeReq["max_tokens"]; ok {
+		openaiReq["max_tokens"] = maxTokens
+	}
+
+	// 处理 messages - Claude 的 system 可能是单独字段
+	messages := []interface{}{}
+
+	// 如果有 system 字段，添加为第一条消息
+	if system, ok := claudeReq["system"].(string); ok && system != "" {
+		messages = append(messages, map[string]interface{}{
+			"role":    "system",
+			"content": system,
+		})
+	}
+
+	// 添加其他消息
+	if claudeMessages, ok := claudeReq["messages"].([]interface{}); ok {
+		messages = append(messages, claudeMessages...)
+	}
+
+	openaiReq["messages"] = messages
+
+	return openaiReq
+}
+
+// convertOpenAIToClaude 将 OpenAI 格式的响应转换为 Claude 格式
+func convertOpenAIToClaude(openaiResp map[string]interface{}) map[string]interface{} {
+	claudeResp := make(map[string]interface{})
+
+	// 基本字段映射
+	if id, ok := openaiResp["id"]; ok {
+		claudeResp["id"] = id
+	}
+	if model, ok := openaiResp["model"]; ok {
+		claudeResp["model"] = model
+	}
+
+	claudeResp["type"] = "message"
+	claudeResp["role"] = "assistant"
+
+	// 转换 choices 为 content
+	if choices, ok := openaiResp["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if message, ok := choice["message"].(map[string]interface{}); ok {
+				if content, ok := message["content"].(string); ok {
+					claudeResp["content"] = []map[string]interface{}{
+						{
+							"type": "text",
+							"text": content,
+						},
+					}
+				}
+			}
+			if finishReason, ok := choice["finish_reason"]; ok {
+				claudeResp["stop_reason"] = finishReason
+			}
+		}
+	}
+
+	// 转换 usage
+	if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
+		claudeUsage := make(map[string]interface{})
+		if promptTokens, ok := usage["prompt_tokens"]; ok {
+			claudeUsage["input_tokens"] = promptTokens
+		}
+		if completionTokens, ok := usage["completion_tokens"]; ok {
+			claudeUsage["output_tokens"] = completionTokens
+		}
+		claudeResp["usage"] = claudeUsage
+	}
+
+	return claudeResp
+}
+
+// convertOpenAIStreamToClaude 将 OpenAI 格式的流式响应块转换为 Claude 格式
+func convertOpenAIStreamToClaude(openaiChunk map[string]interface{}) map[string]interface{} {
+	claudeChunk := make(map[string]interface{})
+
+	// 基本字段
+	if id, ok := openaiChunk["id"]; ok {
+		claudeChunk["id"] = id
+	}
+	if model, ok := openaiChunk["model"]; ok {
+		claudeChunk["model"] = model
+	}
+
+	// 处理 choices
+	if choices, ok := openaiChunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			// 检查是否有 delta
+			if delta, ok := choice["delta"].(map[string]interface{}); ok {
+				if content, ok := delta["content"].(string); ok && content != "" {
+					// 内容块
+					claudeChunk["type"] = "content_block_delta"
+					claudeChunk["delta"] = map[string]interface{}{
+						"type": "text_delta",
+						"text": content,
+					}
+				} else if role, ok := delta["role"].(string); ok {
+					// 开始块
+					claudeChunk["type"] = "message_start"
+					claudeChunk["message"] = map[string]interface{}{
+						"id":    claudeChunk["id"],
+						"type":  "message",
+						"role":  role,
+						"model": claudeChunk["model"],
+					}
+				}
+			}
+
+			// 检查 finish_reason
+			if finishReason, ok := choice["finish_reason"]; ok && finishReason != nil {
+				claudeChunk["type"] = "message_delta"
+				claudeChunk["delta"] = map[string]interface{}{
+					"stop_reason": finishReason,
+				}
+			}
+		}
+	}
+
+	// 转换 usage（如果有）
+	if usage, ok := openaiChunk["usage"].(map[string]interface{}); ok {
+		claudeUsage := make(map[string]interface{})
+		if promptTokens, ok := usage["prompt_tokens"].(float64); ok {
+			claudeUsage["input_tokens"] = int(promptTokens)
+		}
+		if completionTokens, ok := usage["completion_tokens"].(float64); ok {
+			claudeUsage["output_tokens"] = int(completionTokens)
+		}
+		claudeChunk["usage"] = claudeUsage
+	}
+
+	return claudeChunk
 }

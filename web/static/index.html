@@ -97,6 +97,13 @@
                     <label>模型名称</label>
                     <input type="text" name="model" required placeholder="step-3.5-flash">
                 </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" name="is_openai_format" style="width: auto; cursor: pointer;">
+                        <span>使用 OpenAI 格式接口</span>
+                    </label>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">勾选此项表示该厂商使用 OpenAI 兼容的 API 格式</p>
+                </div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
                     <button type="button" class="btn-danger" onclick="hideAddModal()">取消</button>
                     <button type="submit" class="btn-success">添加</button>
@@ -125,6 +132,13 @@
                 <div class="form-group">
                     <label>模型名称</label>
                     <input type="text" name="model" id="editModel" required placeholder="step-3.5-flash">
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" name="is_openai_format" id="editIsOpenAIFormat" style="width: auto; cursor: pointer;">
+                        <span>使用 OpenAI 格式接口</span>
+                    </label>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">勾选此项表示该厂商使用 OpenAI 兼容的 API 格式</p>
                 </div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
                     <button type="button" class="btn-danger" onclick="hideEditModal()">取消</button>
@@ -210,6 +224,7 @@
                             <p><strong>URL:</strong> <a href="${p.base_url}" target="_blank" style="color: #667eea; text-decoration: none;">${p.base_url}</a></p>
                             <p><strong>API Key:</strong> ${p.api_key.substring(0, 20)}...</p>
                             <p><strong>模型:</strong> ${p.model}</p>
+                            <p><strong>格式:</strong> ${p.is_openai_format ? '<span class="badge badge-active">OpenAI</span>' : '<span class="badge badge-inactive">Claude</span>'}</p>
                         </div>
                     </div>
                     <div class="provider-actions">
@@ -259,6 +274,7 @@
             document.getElementById('editBaseUrl').value = provider.base_url;
             document.getElementById('editApiKey').value = provider.api_key;
             document.getElementById('editModel').value = provider.model;
+            document.getElementById('editIsOpenAIFormat').checked = provider.is_openai_format || false;
 
             showEditModal();
         }
@@ -270,7 +286,8 @@
                 name: formData.get('name'),
                 base_url: formData.get('base_url'),
                 api_key: formData.get('api_key'),
-                model: formData.get('model').trim()
+                model: formData.get('model').trim(),
+                is_openai_format: formData.get('is_openai_format') === 'on'
             };
 
             try {
@@ -303,6 +320,7 @@
                 base_url: formData.get('base_url'),
                 api_key: formData.get('api_key'),
                 model: formData.get('model').trim(),
+                is_openai_format: formData.get('is_openai_format') === 'on',
                 is_active: providers.find(p => p.id === id)?.is_active || false,
                 created_at: providers.find(p => p.id === id)?.created_at || new Date().toISOString()
             };
