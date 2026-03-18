@@ -47,7 +47,7 @@ func rotateLogFiles() error {
 	// 获取当前日期时间
 	now := time.Now()
 	dateStr := now.Format("2006-01-02")
-	timeStr := now.Format("2006-01-02_15-04-05")
+	timeStr := now.Format("2006-01-02_15")
 
 	// 如果日期没变，不需要轮转
 	if currentDate == dateStr && infoFile != nil && errorFile != nil {

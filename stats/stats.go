@@ -41,6 +41,7 @@ type Stats struct {
 	mu            sync.RWMutex
 	clients       map[*websocket.Conn]bool
 	broadcast     chan UsageRecord
+	dirty         bool // 标记数据是否需要保存
 }
 
 type PersistentStats struct {
@@ -56,6 +57,7 @@ func Init() {
 		ProviderStats: make(map[string]*ProviderStats),
 		clients:       make(map[*websocket.Conn]bool),
 		broadcast:     make(chan UsageRecord, 100),
+		dirty:         false,
 	}
 
 	// 从文件加载统计数据
@@ -67,6 +69,9 @@ func Init() {
 
 	// 启动广播协程
 	go stats.handleBroadcast()
+
+	// 启动定时保存协程
+	go stats.autoSave()
 }
 
 func (s *Stats) handleBroadcast() {
@@ -137,6 +142,47 @@ func (s *Stats) saveToFile() error {
 	return os.WriteFile("stats/stats.json", data, 0644)
 }
 
+// autoSave 定时保存数据
+func (s *Stats) autoSave() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.mu.Lock()
+		if s.dirty {
+			s.mu.Unlock()
+			if err := s.saveToFile(); err != nil {
+				log.Printf("⚠️ 自动保存统计数据失败: %v", err)
+			} else {
+				s.mu.Lock()
+				s.dirty = false
+				s.mu.Unlock()
+			}
+		} else {
+			s.mu.Unlock()
+		}
+	}
+}
+
+// Shutdown 立即保存数据（用于程序退出时）
+func Shutdown() {
+	if stats == nil {
+		return
+	}
+
+	stats.mu.Lock()
+	needSave := stats.dirty
+	stats.mu.Unlock()
+
+	if needSave {
+		if err := stats.saveToFile(); err != nil {
+			log.Printf("⚠️ 保存统计数据失败: %v", err)
+		} else {
+			log.Println("✅ 统计数据已保存")
+		}
+	}
+}
+
 func RecordUsage(providerID, providerName, model, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64) {
 	stats.mu.Lock()
 
@@ -170,12 +216,14 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		}
 	}
 	providerStat := stats.ProviderStats[providerID]
+	providerStat.ProviderName = providerName // 每次都更新名字，确保同步
 	providerStat.InputTokens += inputTokens
 	providerStat.OutputTokens += outputTokens
 	providerStat.TotalTokens += inputTokens + outputTokens
 	providerStat.TotalCost += cost
 	providerStat.RequestCount++
 
+	stats.dirty = true // 标记需要保存
 	stats.mu.Unlock()
 
 	// 打印日志
@@ -190,9 +238,6 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		timeToFirst,
 		cost,
 	)
-
-	// 异步保存到文件
-	go stats.saveToFile()
 
 	// 广播到所有WebSocket客户端
 	select {
@@ -239,19 +284,22 @@ func (s *Stats) GetSummary() map[string]interface{} {
 // ResetStats 重置所有统计数据
 func ResetStats() {
 	stats.mu.Lock()
-	defer stats.mu.Unlock()
 	stats.Records = []UsageRecord{}
 	stats.ProviderStats = make(map[string]*ProviderStats)
+	stats.dirty = true
+	stats.mu.Unlock()
+
 	log.Println("✅ 所有统计数据已重置")
 
-	// 保存到文件
-	go stats.saveToFile()
+	// 立即保存到文件
+	if err := stats.saveToFile(); err != nil {
+		log.Printf("⚠️ 保存统计数据失败: %v", err)
+	}
 }
 
 // ResetProviderStats 重置指定供应商的统计数据
 func ResetProviderStats(providerID string) {
 	stats.mu.Lock()
-	defer stats.mu.Unlock()
 
 	// 删除该供应商的统计
 	delete(stats.ProviderStats, providerID)
@@ -264,11 +312,15 @@ func ResetProviderStats(providerID string) {
 		}
 	}
 	stats.Records = newRecords
+	stats.dirty = true
+	stats.mu.Unlock()
 
 	log.Printf("✅ 供应商 %s 的统计数据已重置", providerID)
 
-	// 保存到文件
-	go stats.saveToFile()
+	// 立即保存到文件
+	if err := stats.saveToFile(); err != nil {
+		log.Printf("⚠️ 保存统计数据失败: %v", err)
+	}
 }
 
 func max(a, b int) int {

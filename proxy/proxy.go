@@ -22,6 +22,75 @@ func RegisterRoutes(r *gin.Engine) {
 	r.Any("/v1/*path", proxyHandler)
 }
 
+// doRequestWithRetry 执行请求并在遇到 "try again" 错误时自动重试
+func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Provider, maxRetries int) (*http.Response, error) {
+	var lastResp *http.Response
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// 为每次重试创建新的请求体 reader
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries {
+				log.Printf("⚠️ 请求失败 (尝试 %d/%d): %v，准备重试...", attempt, maxRetries, err)
+				time.Sleep(time.Duration(attempt) * time.Second) // 递增延迟
+				continue
+			}
+			return nil, err
+		}
+
+		// 读取响应体以检查是否包含 "try again" 错误
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries {
+				log.Printf("⚠️ 读取响应失败 (尝试 %d/%d): %v，准备重试...", attempt, maxRetries, err)
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			return nil, err
+		}
+
+		// 检查响应是否包含 "try again" 错误
+		shouldRetry := false
+		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			var errorResp map[string]interface{}
+			if json.Valid(respBody) && json.Unmarshal(respBody, &errorResp) == nil {
+				if errorObj, ok := errorResp["error"].(map[string]interface{}); ok {
+					if message, ok := errorObj["message"].(string); ok {
+						if strings.Contains(strings.ToLower(message), "try again") ||
+							strings.Contains(strings.ToLower(message), "high traffic") {
+							shouldRetry = true
+						}
+					}
+				}
+			}
+		}
+
+		// 如果需要重试且还有重试次数
+		if shouldRetry && attempt < maxRetries {
+			log.Printf("⚠️ 检测到 'try again' 错误 (尝试 %d/%d)，准备重试...", attempt, maxRetries)
+			time.Sleep(time.Duration(attempt) * time.Second) // 递增延迟
+			continue
+		}
+
+		// 成功或不需要重试，重新包装响应体并返回
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if shouldRetry && attempt == maxRetries {
+			log.Printf("❌ 重试 %d 次后仍然失败，终止重试", maxRetries)
+		} else if attempt > 1 {
+			log.Printf("✅ 重试成功 (尝试 %d/%d)", attempt, maxRetries)
+		}
+		return resp, nil
+	}
+
+	return lastResp, lastErr
+}
+
 func proxyHandler(c *gin.Context) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
@@ -112,11 +181,11 @@ func proxyHandler(c *gin.Context) {
 	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	// 发送请求
-	resp, err := http.DefaultClient.Do(req)
+	// 发送请求，带重试机制
+	resp, err := doRequestWithRetry(req, bodyBytes, provider, 3)
 	if err != nil {
-		log.Printf("Proxy error: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to proxy request"})
+		log.Printf("Proxy error after retries: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to proxy request after retries"})
 		return
 	}
 	defer resp.Body.Close()

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"switchai/config"
 	"switchai/history"
 	"switchai/logger"
@@ -12,6 +15,8 @@ import (
 	"switchai/service"
 	"switchai/stats"
 	"switchai/web"
+	"syscall"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -85,10 +90,40 @@ func startServer(port string) {
 
 	// 启动服务
 	addr := ":" + port
-	logger.Info("Starting SwitchAI service on %s", addr)
-	fmt.Printf("\n🚀 SwitchAI is running on http://localhost:%s\n\n", port)
-	if err := r.Run(addr); err != nil {
-		logger.Error("Failed to start server: %v", err)
-		log.Fatalf("Failed to start server: %v", err)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: r,
 	}
+
+	// 启动服务器
+	go func() {
+		logger.Info("Starting SwitchAI service on %s", addr)
+		fmt.Printf("\n🚀 SwitchAI is running on http://localhost:%s\n\n", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Failed to start server: %v", err)
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// 等待中断信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Info("Shutting down server...")
+	fmt.Println("\n🛑 正在关闭服务器...")
+
+	// 立即保存统计数据
+	stats.Shutdown()
+
+	// 优雅关闭服务器
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("Server forced to shutdown: %v", err)
+		log.Fatal("Server forced to shutdown:", err)
+	}
+
+	logger.Info("Server exited")
+	fmt.Println("✅ 服务器已安全退出")
 }
