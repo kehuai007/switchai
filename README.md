@@ -20,15 +20,15 @@
 #### Windows (PowerShell)
 
 ```powershell
-# 自动下载最新版本并安装为系统服务
-irm https://github.com/kehuai007/switchai/releases/latest/download/switchai-windows-amd64.exe | iex
+# 下载并安装为系统服务
+irm https://github.com/kehuai007/switchai/releases/latest/download/switchai-windows-amd64.exe -OutFile switchai.exe; .\switchai.exe -install
 ```
 
 #### Linux
 
 ```bash
-# 自动下载最新版本并安装为系统服务
-curl -fsSL https://raw.githubusercontent.com/kehuai007/switchai/main/install.sh | bash
+# 下载并安装为系统服务
+curl -L -o switchai https://github.com/kehuai007/switchai/releases/latest/download/switchai-linux-amd64 && chmod +x switchai && sudo ./switchai -install
 ```
 
 ---
