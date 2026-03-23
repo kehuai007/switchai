@@ -68,21 +68,23 @@ build.bat
 ## 命令行参数
 
 ```bash
-# 默认端口(7777)启动
+# 默认端口(7777)启动，首次启动会随机生成密码
 switchai-windows-amd64.exe
 
 # 指定端口启动
-switchai-windows-amd64.exe -port 8080 -p admin
+switchai-windows-amd64.exe -port 8080
 
 # 安装为系统服务
 switchai-windows-amd64.exe -install
 
 # 安装为系统服务并指定端口
-switchai-windows-amd64.exe -install -port 8080 -p admin
+switchai-windows-amd64.exe -install -port 8080
 
 # 卸载系统服务
 switchai-windows-amd64.exe -uninstall
 ```
+
+**首次启动**: 系统会自动生成随机密码，密码会显示在启动日志中。登录后可在 Web 界面修改密码。
 
 ## 服务安装
 

@@ -25,7 +25,6 @@ import (
 func main() {
 	// Parse command line flags
 	port := flag.String("port", "7777", "Port to listen on")
-	password := flag.String("p", "admin", "Password for web interface")
 	install := flag.Bool("install", false, "Install as system service")
 	uninstall := flag.Bool("uninstall", false, "Uninstall system service")
 	flag.Parse()
@@ -48,10 +47,10 @@ func main() {
 	}
 
 	// Normal startup
-	startServer(*port, *password)
+	startServer(*port)
 }
 
-func startServer(port, password string) {
+func startServer(port string) {
 	// 初始化日志系统
 	if err := logger.Init(); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
@@ -84,7 +83,17 @@ func startServer(port, password string) {
 	r.Use(cors.Default())
 
 	// 管理界面路由
-	web.SetPassword(password)
+	// 检查是否需要生成随机密码
+	cfg := config.GetConfig()
+	if cfg.GetPasswordMD5() == "" {
+		pwd, err := cfg.GeneratePassword()
+		if err != nil {
+			logger.Error("Failed to generate password: %v", err)
+		} else {
+			logger.Info("Generated random password: %s", pwd)
+			fmt.Printf("\n🔐 初始密码: %s (请牢记，首次登录后可修改)\n\n", pwd)
+		}
+	}
 	web.RegisterRoutes(r)
 
 	// Claude API 代理路由

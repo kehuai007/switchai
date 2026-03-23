@@ -19,15 +19,9 @@ import (
 )
 
 var (
-	webPassword  string
 	loginCookie  = "switchai_auth"
 	sessionToken string // 存储当前会话 token，登录时生成，验证时比对
 )
-
-// SetPassword 设置 Web 管理界面密码
-func SetPassword(pwd string) {
-	webPassword = pwd
-}
 
 // 生成随机字符串
 func generateRandomString(length int) string {
@@ -74,6 +68,9 @@ func RegisterRoutes(r *gin.Engine) {
 		// 服务器密钥管理
 		api.GET("/server-key", getServerKey)
 		api.POST("/server-key/generate", generateServerKey)
+
+		// 密码管理
+		api.POST("/password/change", changePassword)
 
 		// 提供商管理
 		api.GET("/providers", getProviders)
@@ -132,7 +129,7 @@ func login(c *gin.Context) {
 		return
 	}
 
-	if req.Password != webPassword {
+	if !config.GetConfig().ValidatePassword(req.Password) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
 		return
 	}
@@ -141,6 +138,29 @@ func login(c *gin.Context) {
 	sessionToken = generateSessionToken()
 	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true) // 24小时
 	c.JSON(http.StatusOK, gin.H{"message": "登录成功"})
+}
+
+// changePassword 修改密码（不需要校验老密码）
+func changePassword(c *gin.Context) {
+	var req struct {
+		NewPassword string `json:"new_password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供新密码"})
+		return
+	}
+
+	if req.NewPassword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能为空"})
+		return
+	}
+
+	if err := config.GetConfig().SetPassword(req.NewPassword); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "修改密码失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "密码修改成功"})
 }
 
 // getServerKey 获取当前服务器密钥

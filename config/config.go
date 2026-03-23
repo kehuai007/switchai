@@ -1,8 +1,10 @@
 package config
 
 import (
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"sync"
@@ -23,7 +25,8 @@ type Provider struct {
 type Config struct {
 	Providers      []Provider `json:"providers"`
 	ActiveProvider string     `json:"active_provider"`
-	ServerKey      string     `json:"server_key"` // 代理服务器密钥，sk- 开头
+	ServerKey      string     `json:"server_key"`       // 代理服务器密钥，sk- 开头
+	PasswordMD5    string     `json:"password_md5"`     // 密码MD5值
 	mu             sync.RWMutex
 }
 
@@ -217,4 +220,52 @@ func (c *Config) GetServerKey() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.ServerKey
+}
+
+// GeneratePassword 生成随机8位密码并存储其MD5
+func (c *Config) GeneratePassword() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 生成8位随机字符串
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	bytes := make([]byte, 8)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	password := make([]byte, 8)
+	for i, b := range bytes {
+		password[i] = chars[int(b)%len(chars)]
+	}
+
+	// 存储MD5
+	c.PasswordMD5 = fmt.Sprintf("%x", md5.Sum(password))
+	if err := c.save(); err != nil {
+		return "", err
+	}
+
+	return string(password), nil
+}
+
+// GetPasswordMD5 获取密码MD5
+func (c *Config) GetPasswordMD5() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.PasswordMD5
+}
+
+// SetPassword 设置密码（直接存储MD5）
+func (c *Config) SetPassword(password string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.PasswordMD5 = fmt.Sprintf("%x", md5.Sum([]byte(password)))
+	return c.save()
+}
+
+// ValidatePassword 验证密码是否正确
+func (c *Config) ValidatePassword(password string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.PasswordMD5 != "" && c.PasswordMD5 == fmt.Sprintf("%x", md5.Sum([]byte(password)))
 }
