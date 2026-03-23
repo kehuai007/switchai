@@ -24,7 +24,7 @@ import (
 
 func main() {
 	// Parse command line flags
-	port := flag.String("port", "7777", "Port to listen on")
+	port := flag.String("p", "7777", "Port to listen on")
 	install := flag.Bool("install", false, "Install as system service")
 	uninstall := flag.Bool("uninstall", false, "Uninstall system service")
 	flag.Parse()

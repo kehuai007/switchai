@@ -72,19 +72,19 @@ build.bat
 switchai-windows-amd64.exe
 
 # 指定端口启动
-switchai-windows-amd64.exe -port 8080
+switchai-windows-amd64.exe -p 8080
 
 # 安装为系统服务
 switchai-windows-amd64.exe -install
 
 # 安装为系统服务并指定端口
-switchai-windows-amd64.exe -install -port 8080
+switchai-windows-amd64.exe -install -p 8080
 
 # 卸载系统服务
 switchai-windows-amd64.exe -uninstall
 ```
 
-**首次启动**: 系统会自动生成随机密码，密码会显示在启动日志中。登录后可在 Web 界面修改密码。
+**首次启动**: 系统会自动生成随机密码，密码会显示在启动日志中。登录后可在 Web 界面修改密码, 若忘记密码,删掉配置文件重新运行会再生成。
 
 ## 服务安装
 
@@ -181,7 +181,7 @@ sudo ./switchai-linux-amd64 -uninstall
 ]
 ```
 
-注意：`ANTHROPIC_AUTH_TOKEN` 可以填任意值，因为真实的 API Key 由本服务管理。
+注意：`ANTHROPIC_AUTH_TOKEN` 需要填网页上的生成的,本地校验。
 
 ## API 端点
 

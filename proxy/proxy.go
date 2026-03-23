@@ -16,6 +16,7 @@ import (
 	"switchai/stats"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -214,11 +215,14 @@ func proxyHandler(c *gin.Context) {
 	// 发送请求，带重试机制
 	resp, err := doRequestWithRetry(req, bodyBytes, provider, 3)
 	if err != nil {
-		log.Printf("Proxy error after retries: %v", err)
+		log.Printf("❌ Proxy error after retries: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to proxy request after retries"})
 		return
 	}
 	defer resp.Body.Close()
+
+	log.Printf("📥 收到目标服务器响应 - Status: %d, Content-Type: %s, Content-Encoding: %s",
+		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
 
 	// 复制响应头，但跳过编码相关的头
 	// Go 的 http.Client 会自动解压 gzip，所以不应该转发 Content-Encoding
@@ -266,6 +270,8 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 			reader = bytes.NewReader(decompressed)
 			log.Printf("Decompressed stream response with %s, decompressed size: %d",
 				contentEncoding, len(decompressed))
+		} else {
+			log.Printf("❌ 解压流式响应失败: %v, Content-Encoding: %s", err, contentEncoding)
 		}
 	}
 
@@ -322,7 +328,11 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 								outputTokens = output
 							}
 						}
+					} else {
+						log.Printf("❌ Claude chunk JSON 序列化失败: %v, chunk: %+v", err, claudeChunk)
 					}
+				} else {
+					log.Printf("❌ OpenAI chunk JSON 解析失败: %v, 原始数据: %s", err, data)
 				}
 			} else {
 				// 非 data 行直接转发
@@ -447,6 +457,8 @@ func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) 
 		}
 		defer zlibReader.Close()
 		return io.ReadAll(zlibReader)
+	case "br":
+		return io.ReadAll(brotli.NewReader(body))
 	default:
 		// 未知的编码格式或无编码，直接返回原始内容
 		return io.ReadAll(body)
@@ -457,19 +469,33 @@ func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) 
 func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("❌ 读取响应体失败: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
 		return
 	}
+
+	// 打印响应基本信息
+	log.Printf("📥 响应信息 - Status: %d, Content-Type: %s, Content-Encoding: %s, Body大小: %d",
+		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"), len(respBody))
 
 	// 根据 Content-Encoding 尝试解压
 	contentEncoding := resp.Header.Get("Content-Encoding")
 	if contentEncoding != "" && contentEncoding != "identity" {
 		if decompressed, err := decompressResponse(bytes.NewReader(respBody), contentEncoding); err == nil {
 			respBody = decompressed
-			log.Printf("Decompressed response with %s, original size: %d, decompressed size: %d",
+			log.Printf("✅ 解压成功: %s, 原始大小: %d, 解压后大小: %d",
 				contentEncoding, len(respBody), len(decompressed))
+		} else {
+			log.Printf("❌ 解压失败: %v, Content-Encoding: %s", err, contentEncoding)
 		}
 	}
+
+	// 打印响应体前200字节用于调试
+	respPreview := respBody
+	if len(respPreview) > 200 {
+		respPreview = respPreview[:200]
+	}
+	log.Printf("📄 响应体预览: %s", string(respPreview))
 
 	model := requestedModel
 	var inputTokens, outputTokens int
@@ -486,7 +512,9 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
 		}
-		if err := json.Unmarshal(respBody, &result); err == nil {
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			log.Printf("❌ JSON解析失败: %v, 原始响应: %s", err, string(respBody))
+		} else {
 			// 如果响应中有模型信息，使用响应中的模型
 			if result.Model != "" {
 				model = result.Model
@@ -494,6 +522,8 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 			// 保存 token 信息
 			inputTokens = result.Usage.InputTokens
 			outputTokens = result.Usage.OutputTokens
+			log.Printf("✅ JSON解析成功 - Model: %s, InputTokens: %d, OutputTokens: %d",
+				model, inputTokens, outputTokens)
 		}
 		responseBodyForHistory = string(respBody)
 	}
