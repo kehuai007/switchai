@@ -15,13 +15,20 @@
         .stat-label { font-size: 14px; opacity: 0.9; margin-bottom: 5px; }
         .stat-value { font-size: 28px; font-weight: bold; }
         .provider-list { display: grid; gap: 15px; }
-        .provider-item { border: 2px solid #e0e0e0; border-radius: 8px; padding: 15px; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; }
+        .provider-item { border: 2px solid #e0e0e0; border-radius: 8px; padding: 15px; transition: all 0.3s; display: flex; align-items: center; gap: 15px; flex-wrap: nowrap; overflow: hidden; }
         .provider-item.active { border-color: #667eea; background: #f0f4ff; }
-        .provider-info { display: flex; align-items: center; gap: 15px; }
-        .provider-order { background: #667eea; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; flex-shrink: 0; }
-        .provider-details h3 { color: #333; margin-bottom: 5px; }
-        .provider-details p { color: #666; font-size: 14px; margin: 3px 0; }
-        .provider-actions { display: flex; gap: 10px; }
+        .provider-item-header { display: flex; align-items: center; gap: 15px; flex-shrink: 0; }
+        .provider-item-header .provider-order { background: #667eea; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; flex-shrink: 0; }
+        .provider-item.active .provider-item-header .provider-order { background: #667eea; }
+        .provider-item-info { flex: 1; min-width: 0; }
+        .provider-item-info h4 { color: #333; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+        .provider-item-info p { color: #666; font-size: 14px; margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .provider-item-info .provider-url { color: #667eea; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+        .provider-item-stats { display: flex; gap: 20px; flex-shrink: 0; padding-top: 0; border-top: none; }
+        .provider-stat { text-align: center; }
+        .provider-stat-value { font-size: 16px; font-weight: bold; color: #333; }
+        .provider-stat-label { font-size: 12px; color: #666; }
+        .provider-item-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: nowrap; margin-left: auto; }
         button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
         .btn-primary { background: #667eea; color: white; }
         .btn-primary:hover { background: #5568d3; }
@@ -61,6 +68,24 @@
         .key-display .key-text { font-family: monospace; font-size: 14px; color: #333; word-break: break-all; }
         .key-display button { padding: 5px 10px; font-size: 12px; }
         .key-actions { display: flex; gap: 10px; margin-top: 10px; }
+
+        /* Key list */
+        .key-list { display: grid; gap: 15px; }
+        .key-item { border: 2px solid #e0e0e0; border-radius: 8px; padding: 15px; transition: all 0.3s; display: flex; align-items: center; gap: 15px; flex-wrap: nowrap; overflow: hidden; }
+        .key-item.disabled { opacity: 0.6; border-color: #cbd5e0; }
+        .key-item-header { display: flex; align-items: center; gap: 15px; flex-shrink: 0; }
+        .key-item-header .key-order { background: #667eea; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; flex-shrink: 0; }
+        .key-item.disabled .key-item-header .key-order { background: #cbd5e0; }
+        .key-item-info { flex: 1; min-width: 0; }
+        .key-item-info h4 { color: #333; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+        .key-item-info p { color: #666; font-size: 14px; margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .key-item-info .key-value { font-family: monospace; font-size: 12px; color: #667eea; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+        .key-item-stats { display: flex; gap: 20px; flex-shrink: 0; padding-top: 0; border-top: none; }
+        .key-stat { text-align: center; }
+        .key-stat-value { font-size: 18px; font-weight: bold; color: #667eea; }
+        .key-stat-label { font-size: 12px; color: #666; }
+        .key-item-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: nowrap; margin-left: auto; }
+        .key-item .ip-list { font-size: 12px; color: #888; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 
         .hidden { display: none !important; }
     </style>
@@ -127,17 +152,11 @@
         </div>
 
         <div class="card">
-            <h2 style="margin-bottom: 15px;">API 服务器密钥</h2>
-            <div class="key-display">
-                <span class="key-text" id="serverKeyDisplay">加载中...</span>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px;">
+                <h2 style="margin: 0;">API 服务器密钥</h2>
+                <button class="btn-primary" onclick="showAddKeyModal()">添加密钥</button>
             </div>
-            <div class="key-actions">
-                <button class="btn-primary" onclick="copyServerKey()">复制密钥</button>
-                <button class="btn-warning" onclick="generateNewKey()">生成新密钥</button>
-            </div>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">
-                使用此密钥访问代理 API，请求时放在 Authorization header 中，格式: <code>Authorization: Bearer sk-xxxx</code>
-            </p>
+            <div id="keyList"></div>
         </div>
 
         <div class="card">
@@ -222,11 +241,57 @@
         </div>
     </div>
 
+    <!-- Add Key Modal -->
+    <div class="modal" id="addKeyModal">
+        <div class="modal-content">
+            <h2 style="margin-bottom: 20px;">添加 API 密钥</h2>
+            <form id="addKeyForm">
+                <div class="form-group">
+                    <label>备注</label>
+                    <input type="text" name="remark" placeholder="例如: 用户A的密钥">
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button type="button" class="btn-danger" onclick="hideAddKeyModal()">取消</button>
+                    <button type="submit" class="btn-success">添加</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Key Modal -->
+    <div class="modal" id="editKeyModal">
+        <div class="modal-content">
+            <h2 style="margin-bottom: 20px;">编辑 API 密钥</h2>
+            <form id="editKeyForm">
+                <input type="hidden" name="id" id="editKeyId">
+                <div class="form-group">
+                    <label>密钥</label>
+                    <input type="text" id="editKeyValue" disabled style="background: #f0f0f0;">
+                </div>
+                <div class="form-group">
+                    <label>备注</label>
+                    <input type="text" name="remark" id="editKeyRemark" placeholder="例如: 用户A的密钥">
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" name="is_enabled" id="editKeyEnabled" style="width: auto; cursor: pointer;">
+                        <span>启用此密钥</span>
+                    </label>
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button type="button" class="btn-danger" onclick="hideEditKeyModal()">取消</button>
+                    <button type="submit" class="btn-success">保存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         let providers = [];
         let activeProvider = '';
         let ws = null;
-        let currentServerKey = '';
+        let serverKeys = [];
+        let keyStats = {};
         let totpEnabled = false;
         let totpSetupComplete = false;
         let serverTimeOffset = 0;
@@ -239,7 +304,8 @@
                     showLoginPage();
                 } else {
                     showMainContent();
-                    loadServerKey();
+                    loadServerKeys();
+                    loadKeyStats();
                     loadProviders();
                     loadStats();
                     connectWebSocket();
@@ -328,7 +394,8 @@
                 if (res.ok) {
                     // 绑定成功，直接进入首页
                     showMainContent();
-                    loadServerKey();
+                    loadServerKeys();
+                    loadKeyStats();
                     loadProviders();
                     loadStats();
                     connectWebSocket();
@@ -396,7 +463,8 @@
 
                 if (res.ok) {
                     showMainContent();
-                    loadServerKey();
+                    loadServerKeys();
+                    loadKeyStats();
                     loadProviders();
                     loadStats();
                     connectWebSocket();
@@ -420,43 +488,131 @@
             }
         }
 
-        async function loadServerKey() {
+        async function loadServerKeys() {
             try {
-                const res = await fetch('/api/server-key');
+                const res = await fetch('/api/server-keys');
                 const data = await res.json();
-                currentServerKey = data.server_key || '';
-                document.getElementById('serverKeyDisplay').textContent = currentServerKey || '未设置';
+                serverKeys = data.server_keys || [];
+                renderServerKeys();
             } catch (err) {
-                document.getElementById('serverKeyDisplay').textContent = '加载失败';
+                console.error('加载密钥列表失败:', err);
             }
         }
 
-        async function generateNewKey() {
-            if (!confirm('确定要生成新的服务器密钥吗？旧的密钥将立即失效。')) return;
-
+        async function loadKeyStats() {
             try {
-                const res = await fetch('/api/server-key/generate', { method: 'POST' });
+                const res = await fetch('/api/stats');
                 const data = await res.json();
-                if (data.server_key) {
-                    currentServerKey = data.server_key;
-                    document.getElementById('serverKeyDisplay').textContent = currentServerKey;
-                    alert('新密钥已生成！');
+                if (data.key_stats) {
+                    keyStats = {};
+                    data.key_stats.forEach(stat => {
+                        keyStats[stat.key_id] = stat;
+                    });
                 }
+                renderServerKeys();
             } catch (err) {
-                alert('生成密钥失败');
+                console.error('加载密钥统计失败:', err);
             }
         }
 
-        function copyServerKey() {
-            if (!currentServerKey) {
-                alert('密钥不存在');
+        function renderServerKeys() {
+            const list = document.getElementById('keyList');
+            if (serverKeys.length === 0) {
+                list.innerHTML = '<p style="color: #999; text-align: center; padding: 40px;">暂无密钥，请添加一个</p>';
                 return;
             }
-            navigator.clipboard.writeText(currentServerKey).then(() => {
+
+            list.innerHTML = serverKeys.map((k, index) => {
+                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, request_count: 0, ip_addresses: [] };
+                const ips = stat.ip_addresses ? stat.ip_addresses.join(', ') : '无';
+                return `
+                    <div class="key-item ${k.is_enabled ? '' : 'disabled'}">
+                        <div class="key-item-header">
+                            <div class="key-order">${index + 1}</div>
+                            <div class="key-item-info">
+                                <h4>
+                                    ${k.remark || '未备注'}
+                                    ${k.is_enabled ? '<span class="badge badge-active">启用</span>' : '<span class="badge badge-inactive">禁用</span>'}
+                                </h4>
+                                <p><span class="key-value">${k.key}</span></p>
+                            </div>
+                        </div>
+                        <div class="key-item-stats">
+                            <div class="key-stat">
+                                <div class="key-stat-value">${stat.input_tokens.toLocaleString()}</div>
+                                <div class="key-stat-label">输入Token</div>
+                            </div>
+                            <div class="key-stat">
+                                <div class="key-stat-value">${stat.output_tokens.toLocaleString()}</div>
+                                <div class="key-stat-label">输出Token</div>
+                            </div>
+                            <div class="key-stat">
+                                <div class="key-stat-value">${stat.total_tokens.toLocaleString()}</div>
+                                <div class="key-stat-label">总Token</div>
+                            </div>
+                            <div class="key-stat">
+                                <div class="key-stat-value">${stat.request_count}</div>
+                                <div class="key-stat-label">请求数</div>
+                            </div>
+                        </div>
+                        <div class="key-item-actions">
+                            <button class="btn-primary" onclick="copyKey('${k.key}')">复制</button>
+                            <button class="btn-warning" onclick="editKey('${k.id}')">编辑</button>
+                            <button class="btn-danger" onclick="deleteKey('${k.id}')">删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function copyKey(key) {
+            navigator.clipboard.writeText(key).then(() => {
                 alert('密钥已复制到剪贴板');
             }).catch(() => {
                 alert('复制失败，请手动复制');
             });
+        }
+
+        function editKey(id) {
+            const key = serverKeys.find(k => k.id === id);
+            if (!key) return;
+
+            document.getElementById('editKeyId').value = key.id;
+            document.getElementById('editKeyValue').value = key.key;
+            document.getElementById('editKeyRemark').value = key.remark || '';
+            document.getElementById('editKeyEnabled').checked = key.is_enabled;
+
+            document.getElementById('editKeyModal').classList.add('show');
+        }
+
+        async function deleteKey(id) {
+            if (!confirm('确定要删除这个密钥吗？')) return;
+
+            try {
+                const res = await fetch(`/api/server-keys/${id}`, { method: 'DELETE' });
+                if (res.ok) {
+                    await loadServerKeys();
+                    await loadKeyStats();
+                } else {
+                    alert('删除失败');
+                }
+            } catch (err) {
+                alert('删除失败');
+            }
+        }
+
+        function showAddKeyModal() {
+            document.getElementById('addKeyModal').classList.add('show');
+        }
+
+        function hideAddKeyModal() {
+            document.getElementById('addKeyModal').classList.remove('show');
+            document.getElementById('addKeyForm').reset();
+        }
+
+        function hideEditKeyModal() {
+            document.getElementById('editKeyModal').classList.remove('show');
+            document.getElementById('editKeyForm').reset();
         }
 
         function connectWebSocket() {
@@ -528,20 +684,28 @@
 
             list.innerHTML = providers.map(p => `
                 <div class="provider-item ${p.id === activeProvider ? 'active' : ''}">
-                    <div class="provider-info">
+                    <div class="provider-item-header">
                         <div class="provider-order">${p.order || 0}</div>
-                        <div class="provider-details">
-                            <h3>
+                        <div class="provider-item-info">
+                            <h4>
                                 ${p.name}
                                 ${p.id === activeProvider ? '<span class="badge badge-active">当前使用</span>' : '<span class="badge badge-inactive">未激活</span>'}
-                            </h3>
-                            <p><strong>URL:</strong> <a href="${p.base_url}" target="_blank" style="color: #667eea; text-decoration: none;">${p.base_url}</a></p>
-                            <p><strong>API Key:</strong> ${p.api_key.substring(0, 20)}...</p>
-                            <p><strong>模型:</strong> ${p.model}</p>
-                            <p><strong>格式:</strong> ${p.is_openai_format ? '<span class="badge badge-active">OpenAI</span>' : '<span class="badge badge-inactive">Claude</span>'}</p>
+                            </h4>
+                            <p><span class="provider-url">${p.base_url}</span></p>
+                            <p>Key: <span style="color: #667eea;">${p.api_key.length > 24 ? p.api_key.substring(0, 24) + '...' : p.api_key}</span></p>
                         </div>
                     </div>
-                    <div class="provider-actions">
+                    <div class="provider-item-stats">
+                        <div class="provider-stat">
+                            <div class="provider-stat-value">${p.model}</div>
+                            <div class="provider-stat-label">模型</div>
+                        </div>
+                        <div class="provider-stat">
+                            <div class="provider-stat-value">${p.is_openai_format ? 'OpenAI' : 'Claude'}</div>
+                            <div class="provider-stat-label">格式</div>
+                        </div>
+                    </div>
+                    <div class="provider-item-actions">
                         ${p.id !== activeProvider ? `<button class="btn-success" onclick="activateProvider('${p.id}')">激活</button>` : ''}
                         <button class="btn-primary" onclick="editProvider('${p.id}')">编辑</button>
                         <button class="btn-danger" onclick="deleteProvider('${p.id}')">删除</button>
@@ -654,6 +818,68 @@
 
                 hideEditModal();
                 await loadProviders();
+            } catch (err) {
+                alert('更新失败: ' + err.message);
+            }
+        });
+
+        // 添加密钥表单
+        document.getElementById('addKeyForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = {
+                remark: formData.get('remark') || ''
+            };
+
+            try {
+                const res = await fetch('/api/server-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (!res.ok) {
+                    const error = await res.json();
+                    alert('添加失败: ' + (error.error || '未知错误'));
+                    return;
+                }
+
+                hideAddKeyModal();
+                await loadServerKeys();
+                await loadKeyStats();
+            } catch (err) {
+                alert('添加失败: ' + err.message);
+            }
+        });
+
+        // 编辑密钥表单
+        document.getElementById('editKeyForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const id = formData.get('id');
+            const key = serverKeys.find(k => k.id === id);
+            if (!key) return;
+
+            const data = {
+                remark: formData.get('remark') || '',
+                is_enabled: formData.get('is_enabled') === 'on'
+            };
+
+            try {
+                const res = await fetch(`/api/server-keys/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (!res.ok) {
+                    const error = await res.json();
+                    alert('更新失败: ' + (error.error || '未知错误'));
+                    return;
+                }
+
+                hideEditKeyModal();
+                await loadServerKeys();
             } catch (err) {
                 alert('更新失败: ' + err.message);
             }

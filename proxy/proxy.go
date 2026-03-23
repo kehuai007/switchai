@@ -8,11 +8,11 @@ import (
 	"compress/zlib"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"switchai/config"
 	"switchai/history"
+	"switchai/logger"
 	"switchai/stats"
 	"time"
 
@@ -39,7 +39,7 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 		if err != nil {
 			lastErr = err
 			if attempt < maxRetries {
-				log.Printf("⚠️ 请求失败 (尝试 %d/%d): %v，准备重试...", attempt, maxRetries, err)
+				logger.Info("⚠️ 请求失败 (尝试 %d/%d): %v，准备重试...", attempt, maxRetries, err)
 				time.Sleep(time.Duration(attempt) * time.Second) // 递增延迟
 				continue
 			}
@@ -52,7 +52,7 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 		if err != nil {
 			lastErr = err
 			if attempt < maxRetries {
-				log.Printf("⚠️ 读取响应失败 (尝试 %d/%d): %v，准备重试...", attempt, maxRetries, err)
+				logger.Info("⚠️ 读取响应失败 (尝试 %d/%d): %v，准备重试...", attempt, maxRetries, err)
 				time.Sleep(time.Duration(attempt) * time.Second)
 				continue
 			}
@@ -77,7 +77,7 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 
 		// 如果需要重试且还有重试次数
 		if shouldRetry && attempt < maxRetries {
-			log.Printf("⚠️ 检测到 'try again' 错误 (尝试 %d/%d)，准备重试...", attempt, maxRetries)
+			logger.Info("⚠️ 检测到 'try again' 错误 (尝试 %d/%d)，准备重试...", attempt, maxRetries)
 			time.Sleep(time.Duration(attempt) * time.Second) // 递增延迟
 			continue
 		}
@@ -85,9 +85,9 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 		// 成功或不需要重试，重新包装响应体并返回
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		if shouldRetry && attempt == maxRetries {
-			log.Printf("❌ 重试 %d 次后仍然失败，终止重试", maxRetries)
+			logger.Info("❌ 重试 %d 次后仍然失败，终止重试", maxRetries)
 		} else if attempt > 1 {
-			log.Printf("✅ 重试成功 (尝试 %d/%d)", attempt, maxRetries)
+			logger.Info("✅ 重试成功 (尝试 %d/%d)", attempt, maxRetries)
 		}
 		return resp, nil
 	}
@@ -100,15 +100,6 @@ func proxyHandler(c *gin.Context) {
 	requestID := uuid.New().String()
 
 	// 验证服务器密钥
-	serverKey := config.GetConfig().GetServerKey()
-	if serverKey == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "Server key not configured",
-		})
-		return
-	}
-
-	// 从 Authorization header 获取密钥
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
@@ -121,8 +112,10 @@ func proxyHandler(c *gin.Context) {
 		providedKey = strings.TrimPrefix(authHeader, "Bearer ")
 	}
 
-	if providedKey != serverKey {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid server key"})
+	// 验证密钥并获取密钥ID
+	keyID, isValid := config.GetConfig().ValidateServerKey(providedKey)
+	if !isValid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or disabled server key"})
 		return
 	}
 
@@ -133,6 +126,8 @@ func proxyHandler(c *gin.Context) {
 		})
 		return
 	}
+
+	clientIP := c.ClientIP()
 
 	// 构建目标 URL
 	targetURL := strings.TrimSuffix(provider.BaseURL, "/") + c.Request.URL.Path
@@ -163,13 +158,13 @@ func proxyHandler(c *gin.Context) {
 			// 获取请求的模型名称
 			if model, ok := requestBody["model"].(string); ok {
 				requestedModel = model
-				log.Printf("Original request model: %s", model)
+				logger.Info("Original request model: %s", model)
 
 				// 使用供应商配置的模型替换请求中的模型
 				if provider.Model != "" {
 					requestBody["model"] = provider.Model
 					requestedModel = provider.Model
-					log.Printf("Replaced with provider model: %s", provider.Model)
+					logger.Info("Replaced with provider model: %s", provider.Model)
 				}
 			}
 
@@ -215,13 +210,13 @@ func proxyHandler(c *gin.Context) {
 	// 发送请求，带重试机制
 	resp, err := doRequestWithRetry(req, bodyBytes, provider, 3)
 	if err != nil {
-		log.Printf("❌ Proxy error after retries: %v", err)
+		logger.Error("❌ Proxy error after retries: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to proxy request after retries"})
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("📥 收到目标服务器响应 - Status: %d, Content-Type: %s, Content-Encoding: %s",
+	logger.Info("📥 收到目标服务器响应 - Status: %d, Content-Type: %s, Content-Encoding: %s",
 		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
 
 	// 复制响应头，但跳过编码相关的头
@@ -238,16 +233,16 @@ func proxyHandler(c *gin.Context) {
 
 	// 处理流式响应
 	if isStream {
-		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel)
+		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, keyID, clientIP)
 		return
 	}
 
 	// 处理非流式响应
-	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel)
+	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, keyID, clientIP)
 }
 
 // handleStreamResponse 处理流式响应（SSE）
-func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string) {
+func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string, keyID, clientIP string) {
 	var firstTokenTime time.Time
 
 	c.Status(resp.StatusCode)
@@ -257,7 +252,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		log.Println("Streaming not supported")
+		logger.Info("Streaming not supported")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Streaming not supported"})
 		return
 	}
@@ -268,10 +263,10 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	if contentEncoding != "" && contentEncoding != "identity" {
 		if decompressed, err := decompressResponse(resp.Body, contentEncoding); err == nil {
 			reader = bytes.NewReader(decompressed)
-			log.Printf("Decompressed stream response with %s, decompressed size: %d",
+			logger.Info("Decompressed stream response with %s, decompressed size: %d",
 				contentEncoding, len(decompressed))
 		} else {
-			log.Printf("❌ 解压流式响应失败: %v, Content-Encoding: %s", err, contentEncoding)
+			logger.Error("❌ 解压流式响应失败: %v, Content-Encoding: %s", err, contentEncoding)
 		}
 	}
 
@@ -329,10 +324,10 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 							}
 						}
 					} else {
-						log.Printf("❌ Claude chunk JSON 序列化失败: %v, chunk: %+v", err, claudeChunk)
+						logger.Error("❌ Claude chunk JSON 序列化失败: %v, chunk: %+v", err, claudeChunk)
 					}
 				} else {
-					log.Printf("❌ OpenAI chunk JSON 解析失败: %v, 原始数据: %s", err, data)
+					logger.Error("❌ OpenAI chunk JSON 解析失败: %v, 原始数据: %s", err, data)
 				}
 			} else {
 				// 非 data 行直接转发
@@ -411,7 +406,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	cost := calculateCost(model, inputTokens, outputTokens)
 
 	// 始终记录统计信息
-	stats.RecordUsage(provider.ID, provider.Name, model, "stream", "claude", inputTokens, outputTokens, cost, duration, timeToFirst)
+	stats.RecordUsage(provider.ID, provider.Name, model, "stream", "claude", inputTokens, outputTokens, cost, duration, timeToFirst, keyID, clientIP)
 
 	// Save to history
 	history.AddRecord(history.RequestRecord{
@@ -419,6 +414,8 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		Timestamp:       startTime,
 		Method:          method,
 		Path:            path,
+		ClientIP:        clientIP,
+		KeyID:           keyID,
 		Provider:        provider.Name,
 		Model:           model,
 		StatusCode:      resp.StatusCode,
@@ -466,16 +463,16 @@ func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) 
 }
 
 // handleNonStreamResponse 处理非流式响应
-func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string) {
+func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string, keyID, clientIP string) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("❌ 读取响应体失败: %v", err)
+		logger.Error("❌ 读取响应体失败: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
 		return
 	}
 
 	// 打印响应基本信息
-	log.Printf("📥 响应信息 - Status: %d, Content-Type: %s, Content-Encoding: %s, Body大小: %d",
+	logger.Info("📥 响应信息 - Status: %d, Content-Type: %s, Content-Encoding: %s, Body大小: %d",
 		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"), len(respBody))
 
 	// 根据 Content-Encoding 尝试解压
@@ -483,10 +480,10 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	if contentEncoding != "" && contentEncoding != "identity" {
 		if decompressed, err := decompressResponse(bytes.NewReader(respBody), contentEncoding); err == nil {
 			respBody = decompressed
-			log.Printf("✅ 解压成功: %s, 原始大小: %d, 解压后大小: %d",
+			logger.Info("✅ 解压成功: %s, 原始大小: %d, 解压后大小: %d",
 				contentEncoding, len(respBody), len(decompressed))
 		} else {
-			log.Printf("❌ 解压失败: %v, Content-Encoding: %s", err, contentEncoding)
+			logger.Error("❌ 解压失败: %v, Content-Encoding: %s", err, contentEncoding)
 		}
 	}
 
@@ -495,7 +492,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	if len(respPreview) > 200 {
 		respPreview = respPreview[:200]
 	}
-	log.Printf("📄 响应体预览: %s", string(respPreview))
+	logger.Info("📄 响应体预览: %s", string(respPreview))
 
 	model := requestedModel
 	var inputTokens, outputTokens int
@@ -513,7 +510,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
-			log.Printf("❌ JSON解析失败: %v, 原始响应: %s", err, string(respBody))
+			logger.Error("❌ JSON解析失败: %v, 原始响应: %s", err, string(respBody))
 		} else {
 			// 如果响应中有模型信息，使用响应中的模型
 			if result.Model != "" {
@@ -522,7 +519,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 			// 保存 token 信息
 			inputTokens = result.Usage.InputTokens
 			outputTokens = result.Usage.OutputTokens
-			log.Printf("✅ JSON解析成功 - Model: %s, InputTokens: %d, OutputTokens: %d",
+			logger.Info("✅ JSON解析成功 - Model: %s, InputTokens: %d, OutputTokens: %d",
 				model, inputTokens, outputTokens)
 		}
 		responseBodyForHistory = string(respBody)
@@ -537,7 +534,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	duration := time.Since(startTime).Milliseconds()
 	cost = calculateCost(model, inputTokens, outputTokens)
 	stats.RecordUsage(provider.ID, provider.Name, model, "non-stream", "claude",
-		inputTokens, outputTokens, cost, duration, 0)
+		inputTokens, outputTokens, cost, duration, 0, keyID, clientIP)
 
 	// Save to history
 	history.AddRecord(history.RequestRecord{
@@ -545,6 +542,8 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 		Timestamp:       startTime,
 		Method:          method,
 		Path:            path,
+		ClientIP:        clientIP,
+		KeyID:           keyID,
 		Provider:        provider.Name,
 		Model:           model,
 		StatusCode:      resp.StatusCode,

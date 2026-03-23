@@ -2,9 +2,10 @@ package stats
 
 import (
 	"encoding/json"
-	"log"
 	"os"
+	"sort"
 	"switchai/appdata"
+	"switchai/logger"
 	"sync"
 	"time"
 
@@ -36,9 +37,19 @@ type ProviderStats struct {
 	RequestCount int     `json:"request_count"`
 }
 
+type KeyStats struct {
+	KeyID        string   `json:"key_id"`
+	InputTokens  int      `json:"input_tokens"`
+	OutputTokens int      `json:"output_tokens"`
+	TotalTokens  int      `json:"total_tokens"`
+	IPAddresses  []string `json:"ip_addresses"` // 去重IP列表
+	RequestCount int      `json:"request_count"`
+}
+
 type Stats struct {
-	Records       []UsageRecord             `json:"records"`
-	ProviderStats map[string]*ProviderStats `json:"provider_stats"`
+	Records       []UsageRecord               `json:"records"`
+	ProviderStats map[string]*ProviderStats   `json:"provider_stats"`
+	KeyStats      map[string]*KeyStats        `json:"key_stats"` // 按密钥ID的统计
 	mu            sync.RWMutex
 	clients       map[*websocket.Conn]bool
 	broadcast     chan UsageRecord
@@ -46,8 +57,9 @@ type Stats struct {
 }
 
 type PersistentStats struct {
-	Records       []UsageRecord             `json:"records"`
-	ProviderStats map[string]*ProviderStats `json:"provider_stats"`
+	Records       []UsageRecord               `json:"records"`
+	ProviderStats map[string]*ProviderStats   `json:"provider_stats"`
+	KeyStats      map[string]*KeyStats        `json:"key_stats"`
 }
 
 var stats *Stats
@@ -56,6 +68,7 @@ func Init() {
 	stats = &Stats{
 		Records:       []UsageRecord{},
 		ProviderStats: make(map[string]*ProviderStats),
+		KeyStats:      make(map[string]*KeyStats),
 		clients:       make(map[*websocket.Conn]bool),
 		broadcast:     make(chan UsageRecord, 100),
 		dirty:         false,
@@ -63,9 +76,9 @@ func Init() {
 
 	// 从文件加载统计数据
 	if err := stats.loadFromFile(); err != nil {
-		log.Printf("⚠️ 加载统计数据失败: %v，使用空数据", err)
+		logger.Info("⚠️ 加载统计数据失败: %v，使用空数据", err)
 	} else {
-		log.Println("✅ 统计数据已从文件加载")
+		logger.Info("✅ 统计数据已从文件加载")
 	}
 
 	// 启动广播协程
@@ -81,7 +94,7 @@ func (s *Stats) handleBroadcast() {
 		for client := range s.clients {
 			err := client.WriteJSON(record)
 			if err != nil {
-				log.Printf("WebSocket write error: %v", err)
+				logger.Error("WebSocket write error: %v", err)
 				client.Close()
 				delete(s.clients, client)
 			}
@@ -119,6 +132,9 @@ func (s *Stats) loadFromFile() error {
 
 	s.Records = persistent.Records
 	s.ProviderStats = persistent.ProviderStats
+	if persistent.KeyStats != nil {
+		s.KeyStats = persistent.KeyStats
+	}
 
 	return nil
 }
@@ -130,6 +146,7 @@ func (s *Stats) saveToFile() error {
 	persistent := PersistentStats{
 		Records:       s.Records,
 		ProviderStats: s.ProviderStats,
+		KeyStats:      s.KeyStats,
 	}
 
 	data, err := json.MarshalIndent(persistent, "", "  ")
@@ -154,7 +171,7 @@ func (s *Stats) autoSave() {
 		if s.dirty {
 			s.mu.Unlock()
 			if err := s.saveToFile(); err != nil {
-				log.Printf("⚠️ 自动保存统计数据失败: %v", err)
+				logger.Error("⚠️ 自动保存统计数据失败: %v", err)
 			} else {
 				s.mu.Lock()
 				s.dirty = false
@@ -178,14 +195,14 @@ func Shutdown() {
 
 	if needSave {
 		if err := stats.saveToFile(); err != nil {
-			log.Printf("⚠️ 保存统计数据失败: %v", err)
+			logger.Error("⚠️ 保存统计数据失败: %v", err)
 		} else {
-			log.Println("✅ 统计数据已保存")
+			logger.Info("✅ 统计数据已保存")
 		}
 	}
 }
 
-func RecordUsage(providerID, providerName, model, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64) {
+func RecordUsage(providerID, providerName, model, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64, keyID, clientIP string) {
 	stats.mu.Lock()
 
 	record := UsageRecord{
@@ -225,12 +242,42 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 	providerStat.TotalCost += cost
 	providerStat.RequestCount++
 
+	// 更新密钥统计
+	if keyID != "" {
+		if _, exists := stats.KeyStats[keyID]; !exists {
+			stats.KeyStats[keyID] = &KeyStats{
+				KeyID:       keyID,
+				IPAddresses: []string{},
+			}
+		}
+		keyStat := stats.KeyStats[keyID]
+		keyStat.InputTokens += inputTokens
+		keyStat.OutputTokens += outputTokens
+		keyStat.TotalTokens += inputTokens + outputTokens
+		keyStat.RequestCount++
+
+		// 添加IP到列表（如果不存在）
+		if clientIP != "" {
+			ipExists := false
+			for _, ip := range keyStat.IPAddresses {
+				if ip == clientIP {
+					ipExists = true
+					break
+				}
+			}
+			if !ipExists {
+				keyStat.IPAddresses = append(keyStat.IPAddresses, clientIP)
+			}
+		}
+	}
+
 	stats.dirty = true // 标记需要保存
 	stats.mu.Unlock()
 
 	// 打印日志
-	log.Printf("📊 Token统计 | 时间: %s | 令牌: %d输入/%d输出 | 分组: %s | 类型: %s | 模型: %s | 用时: %dms | 首字: %dms | 花费: $%.6f",
+	logger.Info("📊 Token统计 | 时间: %s | 密钥: %s | 令牌: %d输入/%d输出 | 分组: %s | 类型: %s | 模型: %s | 用时: %dms | 首字: %dms | 花费: $%.6f | IP: %s",
 		record.Timestamp.Format("15:04:05"),
+		keyID[:8]+"...",
 		inputTokens,
 		outputTokens,
 		group,
@@ -239,13 +286,14 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		duration,
 		timeToFirst,
 		cost,
+		clientIP,
 	)
 
 	// 广播到所有WebSocket客户端
 	select {
 	case stats.broadcast <- record:
 	default:
-		log.Println("Broadcast channel full, skipping")
+		logger.Info("Broadcast channel full, skipping")
 	}
 }
 
@@ -267,11 +315,25 @@ func (s *Stats) GetSummary() map[string]interface{} {
 		totalCost += providerStat.TotalCost
 	}
 
-	// 转换为数组格式
+	// 转换为数组格式并按供应商名称字母序排序
 	providerStatsArray := make([]*ProviderStats, 0, len(s.ProviderStats))
 	for _, stat := range s.ProviderStats {
 		providerStatsArray = append(providerStatsArray, stat)
 	}
+	// 按供应商名称字母序排序，固定列表顺序
+	sort.Slice(providerStatsArray, func(i, j int) bool {
+		return providerStatsArray[i].ProviderName < providerStatsArray[j].ProviderName
+	})
+
+	// 转换为密钥统计数组
+	keyStatsArray := make([]*KeyStats, 0, len(s.KeyStats))
+	for _, stat := range s.KeyStats {
+		keyStatsArray = append(keyStatsArray, stat)
+	}
+	// 按密钥创建时间排序
+	sort.Slice(keyStatsArray, func(i, j int) bool {
+		return keyStatsArray[i].KeyID < keyStatsArray[j].KeyID
+	})
 
 	return map[string]interface{}{
 		"total_input_tokens":  totalInput,
@@ -279,8 +341,20 @@ func (s *Stats) GetSummary() map[string]interface{} {
 		"total_tokens":        totalInput + totalOutput,
 		"total_cost":          totalCost,
 		"provider_stats":      providerStatsArray,
+		"key_stats":           keyStatsArray,
 		"recent_records":      s.Records[max(0, len(s.Records)-10):],
 	}
+}
+
+// GetKeyStats 获取指定密钥的统计信息
+func GetKeyStats(keyID string) *KeyStats {
+	stats.mu.RLock()
+	defer stats.mu.RUnlock()
+
+	if stat, exists := stats.KeyStats[keyID]; exists {
+		return stat
+	}
+	return nil
 }
 
 // ResetStats 重置所有统计数据
@@ -288,14 +362,15 @@ func ResetStats() {
 	stats.mu.Lock()
 	stats.Records = []UsageRecord{}
 	stats.ProviderStats = make(map[string]*ProviderStats)
+	stats.KeyStats = make(map[string]*KeyStats)
 	stats.dirty = true
 	stats.mu.Unlock()
 
-	log.Println("✅ 所有统计数据已重置")
+	logger.Info("✅ 所有统计数据已重置")
 
 	// 立即保存到文件
 	if err := stats.saveToFile(); err != nil {
-		log.Printf("⚠️ 保存统计数据失败: %v", err)
+		logger.Error("⚠️ 保存统计数据失败: %v", err)
 	}
 }
 
@@ -317,11 +392,28 @@ func ResetProviderStats(providerID string) {
 	stats.dirty = true
 	stats.mu.Unlock()
 
-	log.Printf("✅ 供应商 %s 的统计数据已重置", providerID)
+	logger.Info("✅ 供应商 %s 的统计数据已重置", providerID)
 
 	// 立即保存到文件
 	if err := stats.saveToFile(); err != nil {
-		log.Printf("⚠️ 保存统计数据失败: %v", err)
+		logger.Error("⚠️ 保存统计数据失败: %v", err)
+	}
+}
+
+// ResetKeyStats 重置指定密钥的统计数据
+func ResetKeyStats(keyID string) {
+	stats.mu.Lock()
+
+	// 删除该密钥的统计
+	delete(stats.KeyStats, keyID)
+	stats.dirty = true
+	stats.mu.Unlock()
+
+	logger.Info("✅ 密钥 %s 的统计数据已重置", keyID)
+
+	// 立即保存到文件
+	if err := stats.saveToFile(); err != nil {
+		logger.Error("⚠️ 保存统计数据失败: %v", err)
 	}
 }
 

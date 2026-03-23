@@ -21,8 +21,7 @@ import (
 )
 
 var (
-	loginCookie  = "switchai_auth"
-	sessionToken string // 存储当前会话 token，登录时生成，验证时比对
+	loginCookie = "switchai_auth"
 )
 
 // 生成随机字符串
@@ -69,8 +68,12 @@ func RegisterRoutes(r *gin.Engine) {
 	api.Use(authMiddleware())
 	{
 		// 服务器密钥管理
-		api.GET("/server-key", getServerKey)
-		api.POST("/server-key/generate", generateServerKey)
+		api.GET("/server-keys", getServerKeys)
+		api.POST("/server-keys", addServerKey)
+		api.PUT("/server-keys/:id", updateServerKey)
+		api.DELETE("/server-keys/:id", deleteServerKey)
+		api.POST("/server-keys/generate", generateServerKey)
+		api.GET("/server-keys/:id/stats", getServerKeyStats)
 
 		// 提供商管理
 		api.GET("/providers", getProviders)
@@ -90,6 +93,7 @@ func RegisterRoutes(r *gin.Engine) {
 
 		// WebSocket
 		api.GET("/ws", handleWebSocket)
+		api.GET("/ws/history", handleHistoryWebSocket)
 	}
 
 	// 2FA 相关 API（不需要认证）
@@ -108,9 +112,20 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		cfg := config.GetConfig()
+		storedToken := cfg.GetSessionToken()
+		storedExpiry := cfg.GetSessionExpiry()
+
 		// 验证 session token
-		if cookieToken != sessionToken || sessionToken == "" {
+		if cookieToken != storedToken || storedToken == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "会话无效，请重新登录"})
+			c.Abort()
+			return
+		}
+
+		// 检查会话是否过期
+		if time.Now().Unix() > storedExpiry {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "会话已过期，请重新登录"})
 			c.Abort()
 			return
 		}
@@ -148,8 +163,12 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// 验证成功，生成会话 token 并存储
-	sessionToken = generateSessionToken()
+	// 验证成功，生成会话 token 并存储到配置文件
+	sessionToken := generateSessionToken()
+	if err := cfg.SetSessionToken(sessionToken); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存会话失败"})
+		return
+	}
 	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true) // 24小时
 	c.JSON(http.StatusOK, gin.H{"message": "登录成功"})
 }
@@ -196,7 +215,7 @@ func totpSetup(c *gin.Context) {
 
 // logout 处理退出登录
 func logout(c *gin.Context) {
-	sessionToken = ""
+	config.GetConfig().ClearSessionToken()
 	c.SetCookie(loginCookie, "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
@@ -231,8 +250,12 @@ func totpVerify(c *gin.Context) {
 		return
 	}
 
-	// 生成会话 token
-	sessionToken = generateSessionToken()
+	// 生成会话 token 并存储到配置文件
+	sessionToken := generateSessionToken()
+	if err := cfg.SetSessionToken(sessionToken); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存会话失败"})
+		return
+	}
 	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "2FA绑定成功"})
 }
@@ -246,21 +269,97 @@ func totpStatus(c *gin.Context) {
 	})
 }
 
-// getServerKey 获取当前服务器密钥
-func getServerKey(c *gin.Context) {
+// getServerKeys 获取所有服务器密钥
+func getServerKeys(c *gin.Context) {
 	cfg := config.GetConfig()
-	key := cfg.GetServerKey()
-	c.JSON(http.StatusOK, gin.H{"server_key": key})
+	keys := cfg.GetServerKeys()
+	c.JSON(http.StatusOK, gin.H{"server_keys": keys})
+}
+
+// addServerKey 添加服务器密钥
+func addServerKey(c *gin.Context) {
+	var key config.ServerKey
+	if err := c.ShouldBindJSON(&key); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 生成随机密钥值
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成密钥失败"})
+		return
+	}
+	keyStr := "sk-"
+	for _, b := range bytes {
+		keyStr += string(chars[int(b)%len(chars)])
+	}
+	key.Key = keyStr
+	key.IsEnabled = true
+
+	if err := config.GetConfig().AddServerKey(key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "密钥添加成功", "key": key})
+}
+
+// updateServerKey 更新服务器密钥
+func updateServerKey(c *gin.Context) {
+	id := c.Param("id")
+	var key config.ServerKey
+	if err := c.ShouldBindJSON(&key); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := config.GetConfig().UpdateServerKey(id, key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "密钥更新成功"})
+}
+
+// deleteServerKey 删除服务器密钥
+func deleteServerKey(c *gin.Context) {
+	id := c.Param("id")
+	if err := config.GetConfig().DeleteServerKey(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "密钥删除成功"})
 }
 
 // generateServerKey 生成新的服务器密钥
 func generateServerKey(c *gin.Context) {
-	if err := config.GetConfig().GenerateServerKey(); err != nil {
+	keyStr, err := config.GetConfig().GenerateServerKey()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成密钥失败"})
 		return
 	}
-	key := config.GetConfig().GetServerKey()
-	c.JSON(http.StatusOK, gin.H{"server_key": key, "message": "密钥已生成"})
+	c.JSON(http.StatusOK, gin.H{"server_key": keyStr, "message": "密钥已生成"})
+}
+
+// getServerKeyStats 获取指定密钥的统计信息
+func getServerKeyStats(c *gin.Context) {
+	id := c.Param("id")
+	keyStat := stats.GetKeyStats(id)
+	if keyStat == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"key_id":       id,
+			"input_tokens":  0,
+			"output_tokens": 0,
+			"total_tokens": 0,
+			"ip_addresses": []string{},
+			"request_count": 0,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, keyStat)
 }
 
 var upgrader = websocket.Upgrader{
@@ -292,6 +391,34 @@ func handleWebSocket(c *gin.Context) {
 		_, _, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("WebSocket client disconnected: %v", err)
+			break
+		}
+	}
+}
+
+func handleHistoryWebSocket(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade error: %v", err)
+		return
+	}
+
+	history.AddClient(conn)
+	log.Println("New history WebSocket client connected")
+
+	// 发送最近 10 条历史记录
+	records, total := history.GetRecords(1, 10)
+	if err := conn.WriteJSON(gin.H{"type": "history", "records": records, "total": total}); err != nil {
+		log.Printf("Error sending initial history: %v", err)
+	}
+
+	// 保持连接，等待客户端断开
+	defer history.RemoveClient(conn)
+
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("History WebSocket client disconnected: %v", err)
 			break
 		}
 	}

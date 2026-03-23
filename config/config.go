@@ -7,6 +7,9 @@ import (
 	"sort"
 	"switchai/appdata"
 	"sync"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 type Provider struct {
@@ -21,13 +24,24 @@ type Provider struct {
 	IsOpenAIFormat bool   `json:"is_openai_format"` // 标识是否为 OpenAI 格式的 API
 }
 
+type ServerKey struct {
+	ID        string `json:"id"`        // 密钥ID
+	Key       string `json:"key"`        // 密钥值 sk-xxxx
+	Remark    string `json:"remark"`     // 备注
+	IsEnabled bool   `json:"is_enabled"` // 是否启用
+	CreatedAt string `json:"created_at"` // 创建时间
+	Order     int    `json:"order"`      // 排序序号
+}
+
 type Config struct {
-	Providers      []Provider `json:"providers"`
+	Providers     []Provider  `json:"providers"`
+	ServerKeys    []ServerKey `json:"server_keys"` // 服务器密钥列表
 	ActiveProvider string     `json:"active_provider"`
-	ServerKey      string     `json:"server_key"` // 代理服务器密钥，sk- 开头
-	TOTPSecret    string     `json:"totp_secret"` // TOTP 2FA 密钥
+	TOTPSecret    string     `json:"totp_secret"`  // TOTP 2FA 密钥
 	TOTPEnabled   bool       `json:"totp_enabled"` // 是否已启用 2FA
-	mu            sync.RWMutex
+	SessionToken  string     `json:"session_token"` // 持久化的会话 token
+	SessionExpiry int64      `json:"session_expiry"` // 会话过期时间戳
+	mu           sync.RWMutex
 }
 
 var cfg *Config
@@ -197,8 +211,8 @@ func (c *Config) sortProviders() {
 	})
 }
 
-// GenerateServerKey 生成新的服务器密钥
-func (c *Config) GenerateServerKey() error {
+// GenerateServerKey 生成新的服务器密钥并添加到列表
+func (c *Config) GenerateServerKey() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -206,22 +220,135 @@ func (c *Config) GenerateServerKey() error {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
-		return err
+		return "", err
 	}
-	key := "sk-"
+	keyStr := "sk-"
 	for _, b := range bytes {
-		key += string(chars[int(b)%len(chars)])
+		keyStr += string(chars[int(b)%len(chars)])
 	}
 
-	c.ServerKey = key
+	// 查找最大序号
+	maxOrder := 0
+	for _, k := range c.ServerKeys {
+		if k.Order > maxOrder {
+			maxOrder = k.Order
+		}
+	}
+
+	serverKey := ServerKey{
+		ID:        uuid.New().String(),
+		Key:       keyStr,
+		Remark:    "",
+		IsEnabled: true,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Order:     maxOrder + 1,
+	}
+
+	c.ServerKeys = append(c.ServerKeys, serverKey)
+
+	if err := c.save(); err != nil {
+		return "", err
+	}
+
+	return keyStr, nil
+}
+
+// GetServerKeys 获取所有服务器密钥
+func (c *Config) GetServerKeys() []ServerKey {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ServerKeys
+}
+
+// ValidateServerKey 验证密钥是否有效，返回密钥ID和是否有效
+func (c *Config) ValidateServerKey(keyStr string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for _, k := range c.ServerKeys {
+		if k.Key == keyStr && k.IsEnabled {
+			return k.ID, true
+		}
+	}
+	return "", false
+}
+
+// AddServerKey 添加服务器密钥
+func (c *Config) AddServerKey(key ServerKey) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 查找最大序号
+	maxOrder := 0
+	for _, k := range c.ServerKeys {
+		if k.Order > maxOrder {
+			maxOrder = k.Order
+		}
+	}
+
+	key.ID = uuid.New().String()
+	key.CreatedAt = time.Now().Format(time.RFC3339)
+	key.Order = maxOrder + 1
+
+	c.ServerKeys = append(c.ServerKeys, key)
 	return c.save()
 }
 
-// GetServerKey 获取服务器密钥
-func (c *Config) GetServerKey() string {
+// UpdateServerKey 更新服务器密钥
+func (c *Config) UpdateServerKey(id string, key ServerKey) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.ServerKeys {
+		if c.ServerKeys[i].ID == id {
+			// 保留原有序号和创建时间
+			key.ID = id
+			key.CreatedAt = c.ServerKeys[i].CreatedAt
+			key.Order = c.ServerKeys[i].Order
+			key.Key = c.ServerKeys[i].Key // 不允许修改密钥值
+			c.ServerKeys[i] = key
+			return c.save()
+		}
+	}
+
+	return nil
+}
+
+// DeleteServerKey 删除服务器密钥
+func (c *Config) DeleteServerKey(id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.ServerKeys {
+		if c.ServerKeys[i].ID == id {
+			deletedOrder := c.ServerKeys[i].Order
+			c.ServerKeys = append(c.ServerKeys[:i], c.ServerKeys[i+1:]...)
+
+			// 重新调整序号
+			for j := range c.ServerKeys {
+				if c.ServerKeys[j].Order > deletedOrder {
+					c.ServerKeys[j].Order--
+				}
+			}
+
+			return c.save()
+		}
+	}
+
+	return nil
+}
+
+// GetServerKeyByID 根据ID获取密钥
+func (c *Config) GetServerKeyByID(id string) *ServerKey {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.ServerKey
+
+	for i := range c.ServerKeys {
+		if c.ServerKeys[i].ID == id {
+			return &c.ServerKeys[i]
+		}
+	}
+	return nil
 }
 
 // GetTOTPSecret 获取 TOTP 密钥
@@ -254,5 +381,39 @@ func (c *Config) EnableTOTP() error {
 	defer c.mu.Unlock()
 
 	c.TOTPEnabled = true
+	return c.save()
+}
+
+// GetSessionToken 获取会话 token
+func (c *Config) GetSessionToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SessionToken
+}
+
+// GetSessionExpiry 获取会话过期时间
+func (c *Config) GetSessionExpiry() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SessionExpiry
+}
+
+// SetSessionToken 设置会话 token（带 24 小时过期）
+func (c *Config) SetSessionToken(token string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.SessionToken = token
+	c.SessionExpiry = time.Now().Add(24 * time.Hour).Unix()
+	return c.save()
+}
+
+// ClearSessionToken 清除会话 token
+func (c *Config) ClearSessionToken() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.SessionToken = ""
+	c.SessionExpiry = 0
 	return c.save()
 }

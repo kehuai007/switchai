@@ -43,7 +43,7 @@
         .log-link { color: #667eea; cursor: pointer; text-decoration: underline; }
         .log-link:hover { color: #5568d3; }
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
-        .modal-content { background: white; margin: 2% auto; padding: 0; border-radius: 8px; width: 90%; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; }
+        .modal-content { background: white; margin: 5% auto; padding: 0; border-radius: 8px; width: 95%; max-width: 600px; max-height: 85vh; display: flex; flex-direction: column; }
         .modal-header { padding: 20px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center; }
         .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
         .close { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
@@ -65,6 +65,12 @@
         .pagination button:hover:not(:disabled) { background: #667eea; color: white; }
         .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
         .pagination span { color: #666; }
+        .token-summary-box { display: flex; align-items: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; padding: 20px; gap: 0; }
+        .token-item { flex: 1; text-align: center; color: white; }
+        .token-divider { width: 1px; height: 40px; background: rgba(255,255,255,0.3); }
+        .token-label { font-size: 12px; opacity: 0.9; margin-bottom: 5px; }
+        .token-value { font-size: 24px; font-weight: bold; }
+        .token-value.cost { color: #ffd700; }
     </style>
 </head>
 <body>
@@ -112,6 +118,8 @@
                 <thead>
                     <tr>
                         <th>时间</th>
+                        <th>IP</th>
+                        <th>Key</th>
                         <th>供应商</th>
                         <th>模型</th>
                         <th>类型</th>
@@ -133,7 +141,7 @@
     <div id="detailModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>请求详情</h2>
+                <h2 id="modalTitle">请求详情</h2>
                 <span class="close" onclick="closeModal()">&times;</span>
             </div>
             <div class="modal-body" id="modalBody"></div>
@@ -145,6 +153,115 @@
         let currentPage = 1;
         let pageSize = 20;
         let totalRecords = 0;
+        let serverKeys = {}; // key_id -> key info
+
+        async function loadServerKeys() {
+            try {
+                const res = await fetch('/api/server-keys');
+                const data = await res.json();
+                const keys = data.server_keys || [];
+                serverKeys = {};
+                keys.forEach(k => {
+                    serverKeys[k.id] = k;
+                });
+            } catch (err) {
+                console.error('Failed to load server keys:', err);
+            }
+        }
+
+        function getKeyRemark(keyId) {
+            if (!keyId) return '-';
+            const key = serverKeys[keyId];
+            return key ? (key.remark || '未备注') : keyId.substring(0, 8) + '...';
+        }
+
+        function showKeyDetail(keyId) {
+            if (!keyId) return;
+            const key = serverKeys[keyId];
+            if (!key) return;
+            document.getElementById('modalTitle').textContent = 'Key详情';
+
+            // 获取该密钥的统计信息
+            fetch(`/api/server-keys/${keyId}/stats`)
+                .then(res => res.json())
+                .then(stat => {
+                    const modalBody = document.getElementById('modalBody');
+                    modalBody.innerHTML = `
+                        <div class="detail-section">
+                            <h3>密钥信息</h3>
+                            <div class="detail-grid">
+                                <div class="detail-item">
+                                    <div class="detail-label">密钥ID</div>
+                                    <div class="detail-value">${key.id}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">备注</div>
+                                    <div class="detail-value">${key.remark || '未备注'}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">密钥</div>
+                                    <div class="detail-value">${key.key}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">状态</div>
+                                    <div class="detail-value">${key.is_enabled ? '启用' : '禁用'}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="detail-section">
+                            <h3>使用统计</h3>
+                            <div class="token-summary-box">
+                                <div class="token-item">
+                                    <div class="token-label">总输入Token</div>
+                                    <div class="token-value">${(stat.input_tokens || 0).toLocaleString()}</div>
+                                </div>
+                                <div class="token-divider"></div>
+                                <div class="token-item">
+                                    <div class="token-label">总输出Token</div>
+                                    <div class="token-value">${(stat.output_tokens || 0).toLocaleString()}</div>
+                                </div>
+                                <div class="token-divider"></div>
+                                <div class="token-item">
+                                    <div class="token-label">总Token</div>
+                                    <div class="token-value">${(stat.total_tokens || 0).toLocaleString()}</div>
+                                </div>
+                                <div class="token-divider"></div>
+                                <div class="token-item">
+                                    <div class="token-label">总请求数</div>
+                                    <div class="token-value">${stat.request_count || 0}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                })
+                .catch(() => {
+                    const modalBody = document.getElementById('modalBody');
+                    modalBody.innerHTML = `
+                        <div class="detail-section">
+                            <h3>密钥信息</h3>
+                            <div class="detail-grid">
+                                <div class="detail-item">
+                                    <div class="detail-label">密钥ID</div>
+                                    <div class="detail-value">${key.id}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">备注</div>
+                                    <div class="detail-value">${key.remark || '未备注'}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">密钥</div>
+                                    <div class="detail-value">${key.key}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">状态</div>
+                                    <div class="detail-value">${key.is_enabled ? '启用' : '禁用'}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            document.getElementById('detailModal').style.display = 'flex';
+        }
 
         function formatTime(timestamp) {
             const date = new Date(timestamp);
@@ -189,6 +306,8 @@
                 recordsTable.innerHTML = records.map(record => `
                     <tr>
                         <td>${formatTime(record.timestamp)}</td>
+                        <td>${record.client_ip || '-'}</td>
+                        <td><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${getKeyRemark(record.key_id)}</span></td>
                         <td>${record.provider || '-'}</td>
                         <td>${record.model || '-'}</td>
                         <td><span class="badge badge-non-stream">HTTP</span></td>
@@ -201,7 +320,7 @@
                     </tr>
                 `).join('');
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr><td colspan="12" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -229,6 +348,8 @@
                 const res = await fetch(`/api/history/${id}`);
                 const record = await res.json();
 
+                document.getElementById('modalTitle').textContent = '请求详情';
+                const keyRemark = getKeyRemark(record.key_id);
                 const modalBody = document.getElementById('modalBody');
                 modalBody.innerHTML = `
                     <div class="detail-section">
@@ -237,6 +358,14 @@
                             <div class="detail-item">
                                 <div class="detail-label">请求时间</div>
                                 <div class="detail-value">${formatTime(record.timestamp)}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Key</div>
+                                <div class="detail-value"><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${keyRemark}</span></div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">客户端IP</div>
+                                <div class="detail-value">${record.client_ip || '-'}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">请求方法</div>
@@ -269,6 +398,31 @@
                             <div class="detail-item">
                                 <div class="detail-label">响应大小</div>
                                 <div class="detail-value">${formatBytes(record.response_size || 0)}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="detail-section">
+                        <h3>Key 使用</h3>
+                        <div class="token-summary-box">
+                            <div class="token-item">
+                                <div class="token-label">输入 Key</div>
+                                <div class="token-value">${record.input_tokens || 0}</div>
+                            </div>
+                            <div class="token-divider"></div>
+                            <div class="token-item">
+                                <div class="token-label">输出 Key</div>
+                                <div class="token-value">${record.output_tokens || 0}</div>
+                            </div>
+                            <div class="token-divider"></div>
+                            <div class="token-item">
+                                <div class="token-label">总 Key</div>
+                                <div class="token-value">${record.total_tokens || 0}</div>
+                            </div>
+                            <div class="token-divider"></div>
+                            <div class="token-item">
+                                <div class="token-label">花费</div>
+                                <div class="token-value cost">${record.cost ? formatCost(record.cost) : '-'}</div>
                             </div>
                         </div>
                     </div>
@@ -424,26 +578,32 @@
             if (data.recent_records && data.recent_records.length > 0) {
                 // Don't update table here, use loadHistory instead
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr><td colspan="12" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+            // 连接历史 WebSocket，接收实时推送的新记录
+            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/history`);
 
             ws.onopen = () => {
-                console.log('WebSocket connected');
+                console.log('History WebSocket connected');
             };
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.provider_id) {
-                    // 单条记录更新
-                    loadStats();
-                } else {
-                    // 完整统计数据
-                    updateStats(data);
+                if (data.type === 'history') {
+                    // 初始加载历史记录
+                    currentPage = 1;
+                    totalRecords = data.total || data.records?.length || 0;
+                    updateHistoryTable(data.records);
+                    updatePagination();
+                } else if (data.id) {
+                    // 单条新记录，直接插入到表格顶部
+                    prependRecord(data);
+                    totalRecords++;
+                    updatePagination();
                 }
             };
 
@@ -455,6 +615,37 @@
                 console.log('WebSocket disconnected, reconnecting...');
                 setTimeout(connectWebSocket, 3000);
             };
+        }
+
+        // 将新记录插入到表格顶部
+        function prependRecord(record) {
+            const recordsTable = document.getElementById('recordsTable');
+            const emptyMsg = recordsTable.querySelector('tr[data-empty]');
+            if (emptyMsg) {
+                emptyMsg.remove();
+            }
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${formatTime(record.timestamp)}</td>
+                <td>${record.client_ip || '-'}</td>
+                <td><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${getKeyRemark(record.key_id)}</span></td>
+                <td>${record.provider || '-'}</td>
+                <td>${record.model || '-'}</td>
+                <td><span class="badge badge-non-stream">HTTP</span></td>
+                <td>${record.input_tokens || 0}</td>
+                <td>${record.output_tokens || 0}</td>
+                <td>${record.total_tokens || 0}</td>
+                <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
+                <td>${record.duration_ms}ms</td>
+                <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
+            `;
+            recordsTable.insertBefore(tr, recordsTable.firstChild);
+
+            // 保持表格最多显示 pageSize 条（第一页时）
+            if (currentPage === 1 && recordsTable.children.length > pageSize) {
+                recordsTable.removeChild(recordsTable.lastChild);
+            }
         }
 
         async function resetAllStats() {
@@ -494,6 +685,7 @@
         }
 
         // 初始加载
+        loadServerKeys();
         loadStats();
         loadHistory();
         connectWebSocket();

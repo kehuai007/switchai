@@ -122,6 +122,9 @@ func startServer(port string) {
 	// 立即保存统计数据
 	stats.Shutdown()
 
+	// 关闭历史记录后台保存
+	history.Shutdown()
+
 	// 优雅关闭服务器
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"switchai/appdata"
 	"sync"
 	"time"
@@ -18,7 +19,16 @@ var (
 	logMutex    sync.Mutex
 	infoFile    *os.File
 	errorFile   *os.File
+	hasInfoLog  bool // 标记是否有info日志写入
+	hasErrorLog bool // 标记是否有error日志写入
+	writerMutex sync.Mutex
 )
+
+// 日志文件保留天数
+const logRetentionDays = 3
+
+// 日志文件名前缀模式：info_2006-01-02_15.log 或 error_2006-01-02_15.log
+var logFilenamePattern = regexp.MustCompile(`^(info|error)_\d{4}-\d{2}-\d{2}_\d{2}\.log$`)
 
 // Init 初始化日志系统
 func Init() error {
@@ -35,6 +45,9 @@ func Init() error {
 
 	// 启动日志轮转检查协程
 	go checkLogRotation()
+
+	// 启动日志清理协程
+	go cleanupOldLogs()
 
 	log.Println("Logger initialized successfully")
 	return nil
@@ -110,9 +123,70 @@ func checkLogRotation() {
 	}
 }
 
+// cleanupOldLogs 清理过期的日志文件
+func cleanupOldLogs() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cleanupLogs()
+	}
+}
+
+// cleanupLogs 清理超过保留天数的日志文件
+func cleanupLogs() {
+	logMutex.Lock()
+	defer logMutex.Unlock()
+
+	logsDir := appdata.GetLogDir()
+	entries, err := os.ReadDir(logsDir)
+	if err != nil {
+		log.Printf("Failed to read logs directory: %v", err)
+		return
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -logRetentionDays)
+	deletedCount := 0
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		filename := entry.Name()
+		if !logFilenamePattern.MatchString(filename) {
+			continue
+		}
+
+		// 解析文件名中的日期：info_2006-01-02_15.log
+		dateStr := filename[5 : 5+10] // 提取 "2006-01-02"
+		fileDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			continue
+		}
+
+		// 如果文件日期早于保留期限，删除
+		if fileDate.Before(cutoff) {
+			filepath := filepath.Join(logsDir, filename)
+			if err := os.Remove(filepath); err != nil {
+				log.Printf("Failed to delete old log file %s: %v", filename, err)
+			} else {
+				deletedCount++
+			}
+		}
+	}
+
+	if deletedCount > 0 {
+		log.Printf("Cleaned up %d old log files", deletedCount)
+	}
+}
+
 // Info 记录信息日志
 func Info(format string, v ...interface{}) {
 	if InfoLogger != nil {
+		writerMutex.Lock()
+		hasInfoLog = true
+		writerMutex.Unlock()
 		InfoLogger.Printf(format, v...)
 	}
 }
@@ -120,12 +194,21 @@ func Info(format string, v ...interface{}) {
 // Error 记录错误日志
 func Error(format string, v ...interface{}) {
 	if ErrorLogger != nil {
+		writerMutex.Lock()
+		hasErrorLog = true
+		writerMutex.Unlock()
 		ErrorLogger.Printf(format, v...)
 	}
 }
 
-// LogRequest 记录请求信息
+// LogRequest 记录请求信息（精简格式，类似history）
 func LogRequest(method, path, clientIP, provider string, statusCode int, latency time.Duration) {
-	Info("Request: method=%s path=%s client=%s provider=%s status=%d latency=%v",
+	Info("[%s] %s %s | %s | %d | %v",
 		method, path, clientIP, provider, statusCode, latency)
+}
+
+// LogHistoryRecord 记录历史请求信息
+func LogHistoryRecord(id, method, path, clientIP, provider, model string, statusCode int, duration int64, inputTokens, outputTokens int) {
+	Info("[%s] %s %s | %s | %s | %d | %dms | in:%d out:%d",
+		method, path, clientIP, provider, model, statusCode, duration, inputTokens, outputTokens)
 }
