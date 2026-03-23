@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"switchai/appdata"
 	"sync"
 	"time"
 )
@@ -22,7 +23,7 @@ var (
 // Init 初始化日志系统
 func Init() error {
 	// 创建 logs 目录
-	logsDir := "logs"
+	logsDir := appdata.GetLogDir()
 	if err := os.MkdirAll(logsDir, 0755); err != nil {
 		return err
 	}
@@ -63,7 +64,7 @@ func rotateLogFiles() error {
 	}
 
 	// 创建新的日志文件
-	logsDir := "logs"
+	logsDir := appdata.GetLogDir()
 	infoFilename := filepath.Join(logsDir, fmt.Sprintf("info_%s.log", timeStr))
 	errorFilename := filepath.Join(logsDir, fmt.Sprintf("error_%s.log", timeStr))
 

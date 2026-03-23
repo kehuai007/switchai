@@ -1,12 +1,11 @@
 package config
 
 import (
-	"crypto/md5"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"os"
 	"sort"
+	"switchai/appdata"
 	"sync"
 )
 
@@ -25,15 +24,18 @@ type Provider struct {
 type Config struct {
 	Providers      []Provider `json:"providers"`
 	ActiveProvider string     `json:"active_provider"`
-	ServerKey      string     `json:"server_key"`       // 代理服务器密钥，sk- 开头
-	PasswordMD5    string     `json:"password_md5"`     // 密码MD5值
-	mu             sync.RWMutex
+	ServerKey      string     `json:"server_key"` // 代理服务器密钥，sk- 开头
+	TOTPSecret    string     `json:"totp_secret"` // TOTP 2FA 密钥
+	TOTPEnabled   bool       `json:"totp_enabled"` // 是否已启用 2FA
+	mu            sync.RWMutex
 }
 
-var (
-	cfg        *Config
-	configFile = "providers.json"
-)
+var cfg *Config
+
+// getConfigFile 返回配置文件路径
+func getConfigFile() string {
+	return appdata.GetConfigPath("providers.json")
+}
 
 func Init() error {
 	cfg = &Config{
@@ -56,7 +58,7 @@ func (c *Config) Load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	data, err := os.ReadFile(configFile)
+	data, err := os.ReadFile(getConfigFile())
 	if err != nil {
 		return err
 	}
@@ -83,7 +85,7 @@ func (c *Config) save() error {
 		return err
 	}
 
-	return os.WriteFile(configFile, data, 0644)
+	return os.WriteFile(getConfigFile(), data, 0644)
 }
 
 func GetConfig() *Config {
@@ -222,50 +224,35 @@ func (c *Config) GetServerKey() string {
 	return c.ServerKey
 }
 
-// GeneratePassword 生成随机8位密码并存储其MD5
-func (c *Config) GeneratePassword() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 生成8位随机字符串
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	bytes := make([]byte, 8)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	password := make([]byte, 8)
-	for i, b := range bytes {
-		password[i] = chars[int(b)%len(chars)]
-	}
-
-	// 存储MD5
-	c.PasswordMD5 = fmt.Sprintf("%x", md5.Sum(password))
-	if err := c.save(); err != nil {
-		return "", err
-	}
-
-	return string(password), nil
-}
-
-// GetPasswordMD5 获取密码MD5
-func (c *Config) GetPasswordMD5() string {
+// GetTOTPSecret 获取 TOTP 密钥
+func (c *Config) GetTOTPSecret() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.PasswordMD5
+	return c.TOTPSecret
 }
 
-// SetPassword 设置密码（直接存储MD5）
-func (c *Config) SetPassword(password string) error {
+// IsTOTPEnabled 检查 TOTP 是否已启用
+func (c *Config) IsTOTPEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.TOTPEnabled
+}
+
+// SetTOTPSecret 设置 TOTP 密钥（首次设置时调用）
+func (c *Config) SetTOTPSecret(secret string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.PasswordMD5 = fmt.Sprintf("%x", md5.Sum([]byte(password)))
+	c.TOTPSecret = secret
+	c.TOTPEnabled = false // 首次设置时未启用，需要验证后启用
 	return c.save()
 }
 
-// ValidatePassword 验证密码是否正确
-func (c *Config) ValidatePassword(password string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.PasswordMD5 != "" && c.PasswordMD5 == fmt.Sprintf("%x", md5.Sum([]byte(password)))
+// EnableTOTP 启用 TOTP（验证成功后调用）
+func (c *Config) EnableTOTP() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.TOTPEnabled = true
+	return c.save()
 }

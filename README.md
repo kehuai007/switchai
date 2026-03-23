@@ -68,7 +68,7 @@ build.bat
 ## 命令行参数
 
 ```bash
-# 默认端口(7777)启动，首次启动会随机生成密码
+# 默认端口(7777)启动，首次访问会显示2FA设置页面
 switchai-windows-amd64.exe
 
 # 指定端口启动
@@ -84,7 +84,7 @@ switchai-windows-amd64.exe -install -p 8080
 switchai-windows-amd64.exe -uninstall
 ```
 
-**首次启动**: 系统会自动生成随机密码，密码会显示在启动日志中。登录后可在 Web 界面修改密码, 若忘记密码,删掉配置文件重新运行会再生成。
+**首次启动**: 首次访问时，会显示 2FA 二维码，绑定 authenticator 应用后使用生成的 6 位验证码登录。若忘记密钥，删除配置文件重新运行。
 
 ## 服务安装
 

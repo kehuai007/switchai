@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"switchai/appdata"
 	"sync"
 	"time"
 
@@ -106,7 +107,7 @@ func (s *Stats) loadFromFile() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile("stats/stats.json")
+	data, err := os.ReadFile(appdata.GetConfigPath("stats/stats.json"))
 	if err != nil {
 		return err
 	}
@@ -137,9 +138,10 @@ func (s *Stats) saveToFile() error {
 	}
 
 	// 确保目录存在
-	os.MkdirAll("stats", 0755)
+	statsDir := appdata.GetDataDir() + "/stats"
+	os.MkdirAll(statsDir, 0755)
 
-	return os.WriteFile("stats/stats.json", data, 0644)
+	return os.WriteFile(appdata.GetConfigPath("stats/stats.json"), data, 0644)
 }
 
 // autoSave 定时保存数据

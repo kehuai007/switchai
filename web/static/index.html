@@ -50,6 +50,11 @@
         .login-box input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; margin-bottom: 15px; }
         .login-box button { width: 100%; padding: 12px; font-size: 16px; }
         .login-error { color: #f56565; margin-top: 10px; font-size: 14px; }
+        .qr-container { margin: 20px 0; }
+        .qr-code { background: white; padding: 15px; border-radius: 8px; display: inline-block; border: 1px solid #e2e8f0; }
+        .qr-code img { display: block; width: 200px; height: 200px; }
+        .time-sync { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 10px 15px; margin-top: 15px; font-size: 14px; color: #666; }
+        .time-tick { font-weight: bold; color: #667eea; }
 
         /* Key display */
         .key-display { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 10px 15px; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; }
@@ -65,9 +70,30 @@
     <div id="loginPage" class="login-container hidden">
         <div class="login-box">
             <h1>SwitchAI</h1>
-            <p>请输入密码登录管理界面</p>
-            <input type="password" id="loginPassword" placeholder="请输入密码" onkeypress="if(event.key==='Enter')doLogin()">
-            <button class="btn-primary" onclick="doLogin()">登录</button>
+            <p id="loginDesc">请输入验证码登录管理界面</p>
+
+            <!-- 2FA 设置页面（首次访问） -->
+            <div id="totpSetupSection" class="hidden">
+                <p style="margin-bottom: 15px;">首次使用，请扫描下方二维码绑定 authenticator 应用</p>
+                <div class="qr-container">
+                    <div class="qr-code">
+                        <img id="qrCode" src="" alt="QR Code">
+                    </div>
+                </div>
+                <div class="time-sync">
+                    服务器时间: <span id="serverTime" class="time-tick">--:--:--</span>
+                </div>
+                <p style="margin-top: 15px; font-size: 12px; color: #666;">如果二维码无法扫描，可以手动输入密钥:</p>
+                <p id="totpSecret" style="font-family: monospace; font-size: 14px; color: #667eea; word-break: break-all; padding: 10px; background: #f7fafc; border-radius: 4px; margin-top: 5px;"></p>
+            </div>
+
+            <!-- 验证码输入框 -->
+            <div id="totpCodeSection" class="hidden">
+                <input type="text" id="loginCode" placeholder="请输入6位验证码" maxlength="6">
+                <button id="loginBtn" class="btn-primary hidden" onclick="doLogin()">登录</button>
+                <button id="bindBtn" class="btn-success" onclick="bindTotp()">绑定</button>
+            </div>
+
             <div id="loginError" class="login-error hidden"></div>
         </div>
     </div>
@@ -78,6 +104,7 @@
             <span>SwitchAI - Claude API 聚合服务</span>
             <div style="display: flex; gap: 10px;">
                 <a href="/log.html" style="font-size: 16px; color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: all 0.3s;">Token Stats</a>
+                <button class="btn-danger" onclick="doLogout()" style="padding: 8px 16px;">退出登录</button>
             </div>
         </h1>
 
@@ -111,13 +138,6 @@
             <p style="font-size: 12px; color: #666; margin-top: 10px;">
                 使用此密钥访问代理 API，请求时放在 Authorization header 中，格式: <code>Authorization: Bearer sk-xxxx</code>
             </p>
-        </div>
-
-        <div class="card">
-            <h2 style="margin-bottom: 15px;">密码管理</h2>
-            <div class="key-actions">
-                <button class="btn-primary" onclick="showChangePasswordModal()">修改密码</button>
-            </div>
         </div>
 
         <div class="card">
@@ -202,28 +222,14 @@
         </div>
     </div>
 
-    <!-- Change Password Modal -->
-    <div class="modal" id="changePasswordModal">
-        <div class="modal-content">
-            <h2 style="margin-bottom: 20px;">修改密码</h2>
-            <form id="changePasswordForm">
-                <div class="form-group">
-                    <label>新密码</label>
-                    <input type="password" name="new_password" id="newPassword" required placeholder="请输入新密码" minlength="1">
-                </div>
-                <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                    <button type="button" class="btn-danger" onclick="hideChangePasswordModal()">取消</button>
-                    <button type="submit" class="btn-success">确认修改</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
     <script>
         let providers = [];
         let activeProvider = '';
         let ws = null;
         let currentServerKey = '';
+        let totpEnabled = false;
+        let totpSetupComplete = false;
+        let serverTimeOffset = 0;
 
         // 检查登录状态
         async function checkAuth() {
@@ -246,22 +252,146 @@
         function showLoginPage() {
             document.getElementById('loginPage').classList.remove('hidden');
             document.getElementById('mainContent').classList.add('hidden');
+            checkTotpStatus();
+            startServerTimeTick();
         }
 
         function showMainContent() {
             document.getElementById('loginPage').classList.add('hidden');
             document.getElementById('mainContent').classList.remove('hidden');
+            stopServerTimeTick();
+        }
+
+        // 检查 TOTP 状态
+        async function checkTotpStatus() {
+            try {
+                const res = await fetch('/api/totp/status');
+                const data = await res.json();
+
+                if (data.enabled) {
+                    // 2FA 已启用，显示登录界面
+                    totpEnabled = true;
+                    totpSetupComplete = true;
+                    document.getElementById('totpSetupSection').classList.add('hidden');
+                    document.getElementById('totpCodeSection').classList.remove('hidden');
+                    document.getElementById('bindBtn').classList.add('hidden');
+                    document.getElementById('loginBtn').classList.remove('hidden');
+                    document.getElementById('loginDesc').textContent = '请输入验证码登录管理界面';
+                } else {
+                    // 2FA 未启用，显示绑定界面
+                    totpEnabled = false;
+                    totpSetupComplete = false;
+                    document.getElementById('totpSetupSection').classList.remove('hidden');
+                    document.getElementById('totpCodeSection').classList.remove('hidden');
+                    document.getElementById('bindBtn').classList.remove('hidden');
+                    document.getElementById('loginDesc').textContent = '首次使用，请先绑定 2FA';
+                    await setupTotp();
+                }
+            } catch (err) {
+                console.error('检查2FA状态失败:', err);
+            }
+        }
+
+        // 设置 TOTP
+        async function setupTotp() {
+            try {
+                const res = await fetch('/api/totp/setup', { method: 'POST' });
+                const data = await res.json();
+
+                if (data.otpauth) {
+                    // 生成二维码
+                    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(data.otpauth)}`;
+                    document.getElementById('qrCode').src = qrUrl;
+                    document.getElementById('totpSecret').textContent = data.secret;
+                    totpSetupComplete = false;
+                }
+            } catch (err) {
+                console.error('设置2FA失败:', err);
+            }
+        }
+
+        // 绑定 TOTP
+        async function bindTotp() {
+            const code = document.getElementById('loginCode').value.trim();
+            if (!code || code.length !== 6) {
+                showError('请输入6位验证码');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/totp/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code })
+                });
+
+                if (res.ok) {
+                    // 绑定成功，直接进入首页
+                    showMainContent();
+                    loadServerKey();
+                    loadProviders();
+                    loadStats();
+                    connectWebSocket();
+                } else {
+                    const data = await res.json();
+                    showError(data.error || '验证失败');
+                }
+            } catch (err) {
+                showError('网络错误');
+            }
+        }
+
+        // 服务器时间同步
+        async function syncServerTime() {
+            const localBefore = Date.now();
+            try {
+                const res = await fetch('/api/totp/status');
+                const localAfter = Date.now();
+                // 粗略计算服务器时间（假设网络延迟对称）
+                serverTimeOffset = localAfter - localBefore / 2 - localBefore;
+            } catch (err) {
+                serverTimeOffset = 0;
+            }
+        }
+
+        function startServerTimeTick() {
+            syncServerTime();
+            updateServerTime();
+            setInterval(updateServerTime, 1000);
+        }
+
+        function stopServerTimeTick() {
+            // 不需要停止，interval 会自动不执行
+        }
+
+        function updateServerTime() {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            document.getElementById('serverTime').textContent = `${hours}:${minutes}:${seconds}`;
+        }
+
+        function showError(msg) {
+            const errorEl = document.getElementById('loginError');
+            errorEl.textContent = msg;
+            errorEl.classList.remove('hidden');
         }
 
         async function doLogin() {
-            const password = document.getElementById('loginPassword').value;
+            const code = document.getElementById('loginCode').value.trim();
             const errorEl = document.getElementById('loginError');
+
+            if (!code || code.length !== 6) {
+                showError('请输入6位验证码');
+                return;
+            }
 
             try {
                 const res = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password })
+                    body: JSON.stringify({ code })
                 });
 
                 if (res.ok) {
@@ -272,12 +402,21 @@
                     connectWebSocket();
                 } else {
                     const data = await res.json();
-                    errorEl.textContent = data.error || '登录失败';
-                    errorEl.classList.remove('hidden');
+                    showError(data.error || '验证失败');
                 }
             } catch (err) {
-                errorEl.textContent = '网络错误，请重试';
-                errorEl.classList.remove('hidden');
+                showError('网络错误，请重试');
+            }
+        }
+
+        async function doLogout() {
+            if (!confirm('确定要退出登录吗？')) return;
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+                ws = null;
+                showLoginPage();
+            } catch (err) {
+                alert('退出失败');
             }
         }
 
@@ -522,40 +661,6 @@
 
         // 初始检查
         checkAuth();
-
-        // 密码修改相关函数
-        function showChangePasswordModal() {
-            document.getElementById('changePasswordModal').classList.add('show');
-        }
-
-        function hideChangePasswordModal() {
-            document.getElementById('changePasswordModal').classList.remove('show');
-            document.getElementById('changePasswordForm').reset();
-        }
-
-        document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const newPassword = formData.get('new_password');
-
-            try {
-                const res = await fetch('/api/password/change', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ new_password: newPassword })
-                });
-
-                if (res.ok) {
-                    alert('密码修改成功！');
-                    hideChangePasswordModal();
-                } else {
-                    const data = await res.json();
-                    alert('修改失败: ' + (data.error || '未知错误'));
-                }
-            } catch (err) {
-                alert('修改失败: ' + err.message);
-            }
-        });
     </script>
 </body>
 </html>

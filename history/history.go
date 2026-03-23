@@ -3,6 +3,7 @@ package history
 import (
 	"encoding/json"
 	"os"
+	"switchai/appdata"
 	"sync"
 	"time"
 )
@@ -53,7 +54,7 @@ func (h *History) loadFromFile() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	data, err := os.ReadFile("history.json")
+	data, err := os.ReadFile(appdata.GetConfigPath("history.json"))
 	if err != nil {
 		return err
 	}
@@ -70,7 +71,7 @@ func (h *History) saveToFile() error {
 		return err
 	}
 
-	return os.WriteFile("history.json", data, 0644)
+	return os.WriteFile(appdata.GetConfigPath("history.json"), data, 0644)
 }
 
 func AddRecord(record RequestRecord) {

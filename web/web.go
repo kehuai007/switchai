@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/pquerna/otp/totp"
 )
 
 var (
@@ -60,6 +62,7 @@ func RegisterRoutes(r *gin.Engine) {
 
 	// 登录 API (不需要认证)
 	r.POST("/api/login", login)
+	r.POST("/api/logout", logout)
 
 	// 需要认证的 API 路由组
 	api := r.Group("/api")
@@ -68,9 +71,6 @@ func RegisterRoutes(r *gin.Engine) {
 		// 服务器密钥管理
 		api.GET("/server-key", getServerKey)
 		api.POST("/server-key/generate", generateServerKey)
-
-		// 密码管理
-		api.POST("/password/change", changePassword)
 
 		// 提供商管理
 		api.GET("/providers", getProviders)
@@ -91,6 +91,11 @@ func RegisterRoutes(r *gin.Engine) {
 		// WebSocket
 		api.GET("/ws", handleWebSocket)
 	}
+
+	// 2FA 相关 API（不需要认证）
+	r.POST("/api/totp/setup", totpSetup)
+	r.POST("/api/totp/verify", totpVerify)
+	r.GET("/api/totp/status", totpStatus)
 }
 
 // authMiddleware 认证中间件，检查登录 cookie
@@ -119,48 +124,126 @@ func generateSessionToken() string {
 	return generateRandomString(32)
 }
 
-// login 处理登录
+// login 处理登录（首次访问显示2FA设置，之后验证2FA）
 func login(c *gin.Context) {
 	var req struct {
-		Password string `json:"password"`
+		Code string `json:"code"` // 2FA 验证码
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供密码"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供验证码"})
 		return
 	}
 
-	if !config.GetConfig().ValidatePassword(req.Password) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
+	cfg := config.GetConfig()
+
+	// 检查是否已设置 TOTP
+	if !cfg.IsTOTPEnabled() {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先设置2FA"})
 		return
 	}
 
-	// 生成会话 token 并存储
+	// 验证 TOTP 验证码
+	if !totp.Validate(req.Code, cfg.GetTOTPSecret()) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "验证码错误"})
+		return
+	}
+
+	// 验证成功，生成会话 token 并存储
 	sessionToken = generateSessionToken()
 	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true) // 24小时
 	c.JSON(http.StatusOK, gin.H{"message": "登录成功"})
 }
 
-// changePassword 修改密码（不需要校验老密码）
-func changePassword(c *gin.Context) {
+// totpSetup 首次设置 TOTP（生成密钥和二维码）
+func totpSetup(c *gin.Context) {
+	cfg := config.GetConfig()
+
+	// 如果已经启用，不允许重新设置
+	if cfg.IsTOTPEnabled() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "2FA已启用，如需重置请删除配置文件"})
+		return
+	}
+
+	// 生成新的 TOTP 密钥
+	secret := cfg.GetTOTPSecret()
+	if secret == "" {
+		// 生成随机密钥
+		key, err := totp.Generate(totp.GenerateOpts{
+			Issuer:      "SwitchAI",
+			AccountName: "admin",
+			Period:      30,
+			SecretSize:  20,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "生成2FA密钥失败"})
+			return
+		}
+		secret = key.Secret()
+		if err := cfg.SetTOTPSecret(secret); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存2FA密钥失败"})
+			return
+		}
+	}
+
+	// 生成二维码 URL
+	otpURL := fmt.Sprintf("otpauth://totp/SwitchAI:admin?secret=%s&issuer=SwitchAI&period=30", secret)
+
+	c.JSON(http.StatusOK, gin.H{
+		"secret": secret,
+		"otpauth": otpURL,
+	})
+}
+
+// logout 处理退出登录
+func logout(c *gin.Context) {
+	sessionToken = ""
+	c.SetCookie(loginCookie, "", -1, "/", "", false, true)
+	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
+}
+
+// totpVerify 验证 TOTP 验证码（绑定时使用）
+func totpVerify(c *gin.Context) {
 	var req struct {
-		NewPassword string `json:"new_password"`
+		Code string `json:"code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供新密码"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供验证码"})
 		return
 	}
 
-	if req.NewPassword == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能为空"})
+	cfg := config.GetConfig()
+	secret := cfg.GetTOTPSecret()
+
+	if secret == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请先设置2FA"})
 		return
 	}
 
-	if err := config.GetConfig().SetPassword(req.NewPassword); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "修改密码失败"})
+	// 验证验证码
+	if !totp.Validate(req.Code, secret) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "验证码错误"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "密码修改成功"})
+	// 验证成功，启用 TOTP
+	if err := cfg.EnableTOTP(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "启用2FA失败"})
+		return
+	}
+
+	// 生成会话 token
+	sessionToken = generateSessionToken()
+	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true)
+	c.JSON(http.StatusOK, gin.H{"message": "2FA绑定成功"})
+}
+
+// totpStatus 获取 TOTP 状态
+func totpStatus(c *gin.Context) {
+	cfg := config.GetConfig()
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":    cfg.IsTOTPEnabled(),
+		"has_secret": cfg.GetTOTPSecret() != "",
+	})
 }
 
 // getServerKey 获取当前服务器密钥
