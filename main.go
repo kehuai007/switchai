@@ -24,7 +24,8 @@ import (
 
 func main() {
 	// Parse command line flags
-	port := flag.String("p", "7777", "Port to listen on")
+	port := flag.String("port", "7777", "Port to listen on")
+	password := flag.String("p", "admin", "Password for web interface")
 	install := flag.Bool("install", false, "Install as system service")
 	uninstall := flag.Bool("uninstall", false, "Uninstall system service")
 	flag.Parse()
@@ -47,10 +48,10 @@ func main() {
 	}
 
 	// Normal startup
-	startServer(*port)
+	startServer(*port, *password)
 }
 
-func startServer(port string) {
+func startServer(port, password string) {
 	// 初始化日志系统
 	if err := logger.Init(); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
@@ -83,6 +84,7 @@ func startServer(port string) {
 	r.Use(cors.Default())
 
 	// 管理界面路由
+	web.SetPassword(password)
 	web.RegisterRoutes(r)
 
 	// Claude API 代理路由

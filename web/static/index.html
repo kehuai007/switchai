@@ -29,6 +29,8 @@
         .btn-danger:hover { background: #e53e3e; }
         .btn-success { background: #48bb78; color: white; }
         .btn-success:hover { background: #38a169; }
+        .btn-warning { background: #ed8936; color: white; }
+        .btn-warning:hover { background: #dd6b20; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
         .modal.show { display: flex; align-items: center; justify-content: center; }
         .modal-content { background: white; border-radius: 8px; padding: 30px; max-width: 500px; width: 90%; }
@@ -39,19 +41,48 @@
         .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
         .badge-active { background: #48bb78; color: white; }
         .badge-inactive { background: #cbd5e0; color: #4a5568; }
+
+        /* Login styles */
+        .login-container { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .login-box { background: white; border-radius: 8px; padding: 40px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); text-align: center; max-width: 400px; width: 90%; }
+        .login-box h1 { margin-bottom: 10px; font-size: 24px; }
+        .login-box p { color: #666; margin-bottom: 30px; }
+        .login-box input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; margin-bottom: 15px; }
+        .login-box button { width: 100%; padding: 12px; font-size: 16px; }
+        .login-error { color: #f56565; margin-top: 10px; font-size: 14px; }
+
+        /* Key display */
+        .key-display { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 10px 15px; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; }
+        .key-display .key-text { font-family: monospace; font-size: 14px; color: #333; word-break: break-all; }
+        .key-display button { padding: 5px 10px; font-size: 12px; }
+        .key-actions { display: flex; gap: 10px; margin-top: 10px; }
+
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
-    <div class="container">
+    <!-- Login Page -->
+    <div id="loginPage" class="login-container hidden">
+        <div class="login-box">
+            <h1>SwitchAI</h1>
+            <p>请输入密码登录管理界面</p>
+            <input type="password" id="loginPassword" placeholder="请输入密码" onkeypress="if(event.key==='Enter')doLogin()">
+            <button class="btn-primary" onclick="doLogin()">登录</button>
+            <div id="loginError" class="login-error hidden"></div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="mainContent" class="container hidden">
         <h1 style="display: flex; justify-content: space-between; align-items: center;">
-            <span>🔄 SwitchAI - Claude API 聚合服务</span>
+            <span>SwitchAI - Claude API 聚合服务</span>
             <div style="display: flex; gap: 10px;">
-                <a href="/log.html" style="font-size: 16px; color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: all 0.3s;">📊 Token Stats →</a>
+                <a href="/log.html" style="font-size: 16px; color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: all 0.3s;">Token Stats</a>
             </div>
         </h1>
 
         <div class="card">
-            <h2 style="margin-bottom: 15px;">📊 Token 使用统计</h2>
+            <h2 style="margin-bottom: 15px;">Token 使用统计</h2>
             <div class="stats">
                 <div class="stat-item">
                     <div class="stat-label">总输入 Token</div>
@@ -69,14 +100,29 @@
         </div>
 
         <div class="card">
+            <h2 style="margin-bottom: 15px;">API 服务器密钥</h2>
+            <div class="key-display">
+                <span class="key-text" id="serverKeyDisplay">加载中...</span>
+            </div>
+            <div class="key-actions">
+                <button class="btn-primary" onclick="copyServerKey()">复制密钥</button>
+                <button class="btn-warning" onclick="generateNewKey()">生成新密钥</button>
+            </div>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">
+                使用此密钥访问代理 API，请求时放在 Authorization header 中，格式: <code>Authorization: Bearer sk-xxxx</code>
+            </p>
+        </div>
+
+        <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2>🌐 API 提供商</h2>
-                <button class="btn-primary" onclick="showAddModal()">➕ 添加提供商</button>
+                <h2>API 提供商</h2>
+                <button class="btn-primary" onclick="showAddModal()">添加提供商</button>
             </div>
             <div class="provider-list" id="providerList"></div>
         </div>
     </div>
 
+    <!-- Add Provider Modal -->
     <div class="modal" id="addModal">
         <div class="modal-content">
             <h2 style="margin-bottom: 20px;">添加 API 提供商</h2>
@@ -112,6 +158,7 @@
         </div>
     </div>
 
+    <!-- Edit Provider Modal -->
     <div class="modal" id="editModal">
         <div class="modal-content">
             <h2 style="margin-bottom: 20px;">编辑 API 提供商</h2>
@@ -152,6 +199,102 @@
         let providers = [];
         let activeProvider = '';
         let ws = null;
+        let currentServerKey = '';
+
+        // 检查登录状态
+        async function checkAuth() {
+            try {
+                const res = await fetch('/api/providers');
+                if (res.status === 401) {
+                    showLoginPage();
+                } else {
+                    showMainContent();
+                    loadServerKey();
+                    loadProviders();
+                    loadStats();
+                    connectWebSocket();
+                }
+            } catch (err) {
+                showLoginPage();
+            }
+        }
+
+        function showLoginPage() {
+            document.getElementById('loginPage').classList.remove('hidden');
+            document.getElementById('mainContent').classList.add('hidden');
+        }
+
+        function showMainContent() {
+            document.getElementById('loginPage').classList.add('hidden');
+            document.getElementById('mainContent').classList.remove('hidden');
+        }
+
+        async function doLogin() {
+            const password = document.getElementById('loginPassword').value;
+            const errorEl = document.getElementById('loginError');
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+
+                if (res.ok) {
+                    showMainContent();
+                    loadServerKey();
+                    loadProviders();
+                    loadStats();
+                    connectWebSocket();
+                } else {
+                    const data = await res.json();
+                    errorEl.textContent = data.error || '登录失败';
+                    errorEl.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorEl.textContent = '网络错误，请重试';
+                errorEl.classList.remove('hidden');
+            }
+        }
+
+        async function loadServerKey() {
+            try {
+                const res = await fetch('/api/server-key');
+                const data = await res.json();
+                currentServerKey = data.server_key || '';
+                document.getElementById('serverKeyDisplay').textContent = currentServerKey || '未设置';
+            } catch (err) {
+                document.getElementById('serverKeyDisplay').textContent = '加载失败';
+            }
+        }
+
+        async function generateNewKey() {
+            if (!confirm('确定要生成新的服务器密钥吗？旧的密钥将立即失效。')) return;
+
+            try {
+                const res = await fetch('/api/server-key/generate', { method: 'POST' });
+                const data = await res.json();
+                if (data.server_key) {
+                    currentServerKey = data.server_key;
+                    document.getElementById('serverKeyDisplay').textContent = currentServerKey;
+                    alert('新密钥已生成！');
+                }
+            } catch (err) {
+                alert('生成密钥失败');
+            }
+        }
+
+        function copyServerKey() {
+            if (!currentServerKey) {
+                alert('密钥不存在');
+                return;
+            }
+            navigator.clipboard.writeText(currentServerKey).then(() => {
+                alert('密钥已复制到剪贴板');
+            }).catch(() => {
+                alert('复制失败，请手动复制');
+            });
+        }
 
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -189,6 +332,10 @@
 
         async function loadProviders() {
             const res = await fetch('/api/providers');
+            if (res.status === 401) {
+                showLoginPage();
+                return;
+            }
             const data = await res.json();
             providers = data.providers || [];
             activeProvider = data.active_provider;
@@ -201,6 +348,10 @@
 
         async function loadStats() {
             const res = await fetch('/api/stats');
+            if (res.status === 401) {
+                showLoginPage();
+                return;
+            }
             const data = await res.json();
             updateStats(data);
         }
@@ -345,10 +496,8 @@
             }
         });
 
-        // 初始加载
-        loadProviders();
-        loadStats();
-        connectWebSocket();
+        // 初始检查
+        checkAuth();
     </script>
 </body>
 </html>

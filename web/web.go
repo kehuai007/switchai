@@ -1,7 +1,9 @@
 package web
 
 import (
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"log"
 	"net/http"
@@ -15,6 +17,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
+
+var (
+	webPassword  string
+	loginCookie  = "switchai_auth"
+	sessionToken string // 存储当前会话 token，登录时生成，验证时比对
+)
+
+// SetPassword 设置 Web 管理界面密码
+func SetPassword(pwd string) {
+	webPassword = pwd
+}
+
+// 生成随机字符串
+func generateRandomString(length int) string {
+	bytes := make([]byte, length)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)[:length]
+}
 
 //go:embed static/*
 var staticFiles embed.FS
@@ -44,9 +64,17 @@ func RegisterRoutes(r *gin.Engine) {
 	// Fallback for other static files if needed
 	r.StaticFS("/static", http.FS(staticFS))
 
-	// API 路由
+	// 登录 API (不需要认证)
+	r.POST("/api/login", login)
+
+	// 需要认证的 API 路由组
 	api := r.Group("/api")
+	api.Use(authMiddleware())
 	{
+		// 服务器密钥管理
+		api.GET("/server-key", getServerKey)
+		api.POST("/server-key/generate", generateServerKey)
+
 		// 提供商管理
 		api.GET("/providers", getProviders)
 		api.POST("/providers", addProvider)
@@ -66,6 +94,70 @@ func RegisterRoutes(r *gin.Engine) {
 		// WebSocket
 		api.GET("/ws", handleWebSocket)
 	}
+}
+
+// authMiddleware 认证中间件，检查登录 cookie
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cookieToken, err := c.Cookie(loginCookie)
+		if err != nil || cookieToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录，请先登录"})
+			c.Abort()
+			return
+		}
+
+		// 验证 session token
+		if cookieToken != sessionToken || sessionToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "会话无效，请重新登录"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// 生成会话 token
+func generateSessionToken() string {
+	return generateRandomString(32)
+}
+
+// login 处理登录
+func login(c *gin.Context) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供密码"})
+		return
+	}
+
+	if req.Password != webPassword {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
+		return
+	}
+
+	// 生成会话 token 并存储
+	sessionToken = generateSessionToken()
+	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true) // 24小时
+	c.JSON(http.StatusOK, gin.H{"message": "登录成功"})
+}
+
+// getServerKey 获取当前服务器密钥
+func getServerKey(c *gin.Context) {
+	cfg := config.GetConfig()
+	key := cfg.GetServerKey()
+	c.JSON(http.StatusOK, gin.H{"server_key": key})
+}
+
+// generateServerKey 生成新的服务器密钥
+func generateServerKey(c *gin.Context) {
+	if err := config.GetConfig().GenerateServerKey(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成密钥失败"})
+		return
+	}
+	key := config.GetConfig().GetServerKey()
+	c.JSON(http.StatusOK, gin.H{"server_key": key, "message": "密钥已生成"})
 }
 
 var upgrader = websocket.Upgrader{

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"os"
 	"sort"
@@ -22,6 +23,7 @@ type Provider struct {
 type Config struct {
 	Providers      []Provider `json:"providers"`
 	ActiveProvider string     `json:"active_provider"`
+	ServerKey      string     `json:"server_key"` // 代理服务器密钥，sk- 开头
 	mu             sync.RWMutex
 }
 
@@ -188,4 +190,31 @@ func (c *Config) sortProviders() {
 	sort.Slice(c.Providers, func(i, j int) bool {
 		return c.Providers[i].Order < c.Providers[j].Order
 	})
+}
+
+// GenerateServerKey 生成新的服务器密钥
+func (c *Config) GenerateServerKey() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 生成 sk- 开头 + 16位随机字符
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return err
+	}
+	key := "sk-"
+	for _, b := range bytes {
+		key += string(chars[int(b)%len(chars)])
+	}
+
+	c.ServerKey = key
+	return c.save()
+}
+
+// GetServerKey 获取服务器密钥
+func (c *Config) GetServerKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ServerKey
 }

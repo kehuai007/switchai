@@ -3,6 +3,9 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"encoding/json"
 	"io"
 	"log"
@@ -94,6 +97,33 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 func proxyHandler(c *gin.Context) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
+
+	// 验证服务器密钥
+	serverKey := config.GetConfig().GetServerKey()
+	if serverKey == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "Server key not configured",
+		})
+		return
+	}
+
+	// 从 Authorization header 获取密钥
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
+		return
+	}
+
+	// 支持 "Bearer sk-xxxx" 或 "sk-xxxx" 格式
+	providedKey := authHeader
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		providedKey = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+
+	if providedKey != serverKey {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid server key"})
+		return
+	}
 
 	provider := config.GetConfig().GetActiveProvider()
 	if provider == nil {
@@ -228,7 +258,18 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		return
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	// 根据 Content-Encoding 处理解压
+	var reader io.Reader = resp.Body
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	if contentEncoding != "" && contentEncoding != "identity" {
+		if decompressed, err := decompressResponse(resp.Body, contentEncoding); err == nil {
+			reader = bytes.NewReader(decompressed)
+			log.Printf("Decompressed stream response with %s, decompressed size: %d",
+				contentEncoding, len(decompressed))
+		}
+	}
+
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	var inputTokens, outputTokens int
@@ -385,6 +426,33 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	})
 }
 
+// decompressResponse 根据 Content-Encoding 解压响应内容
+func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) {
+	switch strings.ToLower(contentEncoding) {
+	case "gzip":
+		gzReader, err := gzip.NewReader(body)
+		if err != nil {
+			return nil, err
+		}
+		defer gzReader.Close()
+		return io.ReadAll(gzReader)
+	case "deflate":
+		flateReader := flate.NewReader(body)
+		defer flateReader.Close()
+		return io.ReadAll(flateReader)
+	case "zlib":
+		zlibReader, err := zlib.NewReader(body)
+		if err != nil {
+			return nil, err
+		}
+		defer zlibReader.Close()
+		return io.ReadAll(zlibReader)
+	default:
+		// 未知的编码格式或无编码，直接返回原始内容
+		return io.ReadAll(body)
+	}
+}
+
 // handleNonStreamResponse 处理非流式响应
 func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string) {
 	respBody, err := io.ReadAll(resp.Body)
@@ -393,56 +461,41 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 		return
 	}
 
+	// 根据 Content-Encoding 尝试解压
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	if contentEncoding != "" && contentEncoding != "identity" {
+		if decompressed, err := decompressResponse(bytes.NewReader(respBody), contentEncoding); err == nil {
+			respBody = decompressed
+			log.Printf("Decompressed response with %s, original size: %d, decompressed size: %d",
+				contentEncoding, len(respBody), len(decompressed))
+		}
+	}
+
 	model := requestedModel
 	var inputTokens, outputTokens int
 	var cost float64
 
-	// 如果是 OpenAI 格式的响应，需要转换为 Claude 格式
-	var finalRespBody []byte
-	if provider.IsOpenAIFormat && resp.StatusCode == 200 && len(respBody) > 0 {
-		var openaiResp map[string]interface{}
-		if err := json.Unmarshal(respBody, &openaiResp); err == nil {
-			// 提取 token 信息
-			if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
-				if prompt, ok := usage["prompt_tokens"].(float64); ok {
-					inputTokens = int(prompt)
-				}
-				if completion, ok := usage["completion_tokens"].(float64); ok {
-					outputTokens = int(completion)
-				}
-			}
-			if m, ok := openaiResp["model"].(string); ok && m != "" {
-				model = m
-			}
-
-			// 转换为 Claude 格式
-			claudeResp := convertOpenAIToClaude(openaiResp)
-			finalRespBody, _ = json.Marshal(claudeResp)
-		} else {
-			finalRespBody = respBody
+	// 解析响应以获取 token 使用情况和模型信息
+	var responseBodyForHistory string
+	if resp.StatusCode == 200 && len(respBody) > 0 {
+		// 尝试解析响应以获取 token 使用情况和模型信息
+		var result struct {
+			Model string `json:"model"`
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
 		}
-	} else {
-		finalRespBody = respBody
-		// 尝试解析响应以获取 token 使用情况和模型信息（Claude 格式）
-		if resp.StatusCode == 200 && len(respBody) > 0 {
-			var result struct {
-				Model string `json:"model"`
-				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
-				} `json:"usage"`
+		if err := json.Unmarshal(respBody, &result); err == nil {
+			// 如果响应中有模型信息，使用响应中的模型
+			if result.Model != "" {
+				model = result.Model
 			}
-			if err := json.Unmarshal(respBody, &result); err == nil {
-				// 如果响应中有模型信息，使用响应中的模型
-				if result.Model != "" {
-					model = result.Model
-				}
-
-				// 保存 token 信息
-				inputTokens = result.Usage.InputTokens
-				outputTokens = result.Usage.OutputTokens
-			}
+			// 保存 token 信息
+			inputTokens = result.Usage.InputTokens
+			outputTokens = result.Usage.OutputTokens
 		}
+		responseBodyForHistory = string(respBody)
 	}
 
 	// 如果模型仍然为空，使用默认值
@@ -456,17 +509,6 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	stats.RecordUsage(provider.ID, provider.Name, model, "non-stream", "claude",
 		inputTokens, outputTokens, cost, duration, 0)
 
-	// 格式化响应体 JSON（如果是有效的 JSON）
-	formattedRespBody := finalRespBody
-	if json.Valid(finalRespBody) {
-		var jsonData interface{}
-		if err := json.Unmarshal(finalRespBody, &jsonData); err == nil {
-			if formatted, err := json.MarshalIndent(jsonData, "", "  "); err == nil {
-				formattedRespBody = formatted
-			}
-		}
-	}
-
 	// Save to history
 	history.AddRecord(history.RequestRecord{
 		ID:              requestID,
@@ -478,18 +520,19 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 		StatusCode:      resp.StatusCode,
 		Duration:        duration,
 		RequestBody:     requestBody,
-		ResponseBody:    string(formattedRespBody),
+		ResponseBody:    responseBodyForHistory,
 		RequestHeaders:  requestHeaders,
 		ResponseHeaders: resp.Header,
 		RequestSize:     int64(len(requestBody)),
-		ResponseSize:    int64(len(formattedRespBody)),
+		ResponseSize:    int64(len(respBody)),
 		InputTokens:     inputTokens,
 		OutputTokens:    outputTokens,
 		TotalTokens:     inputTokens + outputTokens,
 		Cost:            cost,
 	})
 
-	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), formattedRespBody)
+	// 原封不动透传响应体，不做任何格式化处理
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
 }
 
 func calculateCost(model string, inputTokens, outputTokens int) float64 {
