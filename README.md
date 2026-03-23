@@ -15,6 +15,24 @@
 
 ## 快速开始
 
+### 一键安装
+
+#### Windows (PowerShell)
+
+```powershell
+# 自动下载最新版本并安装为系统服务
+irm https://github.com/kehuai007/switchai/releases/latest/download/switchai-windows-amd64.exe | iex
+```
+
+#### Linux
+
+```bash
+# 自动下载最新版本并安装为系统服务
+curl -fsSL https://raw.githubusercontent.com/kehuai007/switchai/main/install.sh | bash
+```
+
+---
+
 ## 界面
 ![主界面](pic/01.png)
 
@@ -31,7 +49,7 @@ go mod tidy
 go run main.go
 
 # 指定端口运行
-go run main.go -p 8080
+go run main.go -port 8080
 ```
 
 ### 生产部署
@@ -54,13 +72,13 @@ build.bat
 switchai-windows-amd64.exe
 
 # 指定端口启动
-switchai-windows-amd64.exe -p 8080
+switchai-windows-amd64.exe -port 8080 -p admin
 
 # 安装为系统服务
 switchai-windows-amd64.exe -install
 
 # 安装为系统服务并指定端口
-switchai-windows-amd64.exe -install -p 8080
+switchai-windows-amd64.exe -install -port 8080 -p admin
 
 # 卸载系统服务
 switchai-windows-amd64.exe -uninstall
