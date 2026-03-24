@@ -42,6 +42,7 @@ type KeyStats struct {
 	InputTokens  int      `json:"input_tokens"`
 	OutputTokens int      `json:"output_tokens"`
 	TotalTokens  int      `json:"total_tokens"`
+	TotalCost    float64  `json:"total_cost"`
 	IPAddresses  []string `json:"ip_addresses"` // 去重IP列表
 	RequestCount int      `json:"request_count"`
 }
@@ -254,6 +255,7 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		keyStat.InputTokens += inputTokens
 		keyStat.OutputTokens += outputTokens
 		keyStat.TotalTokens += inputTokens + outputTokens
+		keyStat.TotalCost += cost
 		keyStat.RequestCount++
 
 		// 添加IP到列表（如果不存在）
@@ -305,14 +307,17 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// 从 KeyStats 计算所有总数，确保总数 = 各密钥统计之和
 	totalInput := 0
 	totalOutput := 0
+	totalRequestCount := 0
 	totalCost := 0.0
 
-	for _, providerStat := range s.ProviderStats {
-		totalInput += providerStat.InputTokens
-		totalOutput += providerStat.OutputTokens
-		totalCost += providerStat.TotalCost
+	for _, keyStat := range s.KeyStats {
+		totalInput += keyStat.InputTokens
+		totalOutput += keyStat.OutputTokens
+		totalRequestCount += keyStat.RequestCount
+		totalCost += keyStat.TotalCost
 	}
 
 	// 转换为数组格式并按供应商名称字母序排序
@@ -340,6 +345,7 @@ func (s *Stats) GetSummary() map[string]interface{} {
 		"total_output_tokens": totalOutput,
 		"total_tokens":        totalInput + totalOutput,
 		"total_cost":          totalCost,
+		"total_request_count": totalRequestCount,
 		"provider_stats":      providerStatsArray,
 		"key_stats":           keyStatsArray,
 		"recent_records":      s.Records[max(0, len(s.Records)-10):],

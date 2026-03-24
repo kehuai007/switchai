@@ -134,7 +134,7 @@
         </h1>
 
         <div class="card">
-            <h2 style="margin-bottom: 15px;">Token 使用统计</h2>
+            <h2 style="margin-bottom: 15px;">总体统计</h2>
             <div class="stats">
                 <div class="stat-item">
                     <div class="stat-label">总输入 Token</div>
@@ -147,6 +147,14 @@
                 <div class="stat-item">
                     <div class="stat-label">总计 Token</div>
                     <div class="stat-value" id="totalTokens">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">总花费</div>
+                    <div class="stat-value" id="totalCost">$0.00</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">总请求数</div>
+                    <div class="stat-value" id="totalRequestCount">0</div>
                 </div>
             </div>
         </div>
@@ -523,8 +531,9 @@
             }
 
             list.innerHTML = serverKeys.map((k, index) => {
-                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, request_count: 0, ip_addresses: [] };
+                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost: 0, request_count: 0, ip_addresses: [] };
                 const ips = stat.ip_addresses ? stat.ip_addresses.join(', ') : '无';
+                const costDisplay = stat.total_cost > 0 ? '$' + stat.total_cost.toFixed(4) : '$0';
                 return `
                     <div class="key-item ${k.is_enabled ? '' : 'disabled'}">
                         <div class="key-item-header">
@@ -553,6 +562,10 @@
                             <div class="key-stat">
                                 <div class="key-stat-value">${stat.request_count}</div>
                                 <div class="key-stat-label">请求数</div>
+                            </div>
+                            <div class="key-stat">
+                                <div class="key-stat-value">${costDisplay}</div>
+                                <div class="key-stat-label">消耗</div>
                             </div>
                         </div>
                         <div class="key-item-actions">
@@ -647,6 +660,8 @@
             document.getElementById('totalInput').textContent = data.total_input_tokens.toLocaleString();
             document.getElementById('totalOutput').textContent = data.total_output_tokens.toLocaleString();
             document.getElementById('totalTokens').textContent = data.total_tokens.toLocaleString();
+            document.getElementById('totalCost').textContent = '$' + (data.total_cost || 0).toFixed(4);
+            document.getElementById('totalRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
         }
 
         async function loadProviders() {
