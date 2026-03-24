@@ -203,8 +203,8 @@
                                     <div class="detail-value">${key.key}</div>
                                 </div>
                                 <div class="detail-item">
-                                    <div class="detail-label">状态</div>
-                                    <div class="detail-value">${key.is_enabled ? '启用' : '禁用'}</div>
+                                    <div class="detail-label">IP地址信息</div>
+                                    <div class="detail-value">${(stat.ip_addresses && stat.ip_addresses.length) > 0 ? stat.ip_addresses.join(', ') : '无'}</div>
                                 </div>
                             </div>
                         </div>
@@ -235,8 +235,12 @@
                     `;
                 })
                 .catch(() => {
-                    const modalBody = document.getElementById('modalBody');
-                    modalBody.innerHTML = `
+                    // 获取该密钥的统计信息（用于显示IP地址）
+                    fetch(`/api/server-keys/${keyId}/stats`)
+                        .then(res => res.json())
+                        .then(stat => {
+                            const modalBody = document.getElementById('modalBody');
+                            modalBody.innerHTML = `
                         <div class="detail-section">
                             <h3>密钥信息</h3>
                             <div class="detail-grid">
@@ -253,12 +257,40 @@
                                     <div class="detail-value">${key.key}</div>
                                 </div>
                                 <div class="detail-item">
-                                    <div class="detail-label">状态</div>
-                                    <div class="detail-value">${key.is_enabled ? '启用' : '禁用'}</div>
+                                    <div class="detail-label">IP地址信息</div>
+                                    <div class="detail-value">${(stat.ip_addresses && stat.ip_addresses.length) > 0 ? stat.ip_addresses.join(', ') : '无'}</div>
                                 </div>
                             </div>
                         </div>
                     `;
+                        })
+                        .catch(() => {
+                            // 获取失败时只显示基本信息
+                            const modalBody = document.getElementById('modalBody');
+                            modalBody.innerHTML = `
+                        <div class="detail-section">
+                            <h3>密钥信息</h3>
+                            <div class="detail-grid">
+                                <div class="detail-item">
+                                    <div class="detail-label">密钥ID</div>
+                                    <div class="detail-value">${key.id}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">备注</div>
+                                    <div class="detail-value">${key.remark || '未备注'}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">密钥</div>
+                                    <div class="detail-value">${key.key}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <div class="detail-label">IP地址信息</div>
+                                    <div class="detail-value">获取失败</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                        });
                 });
             document.getElementById('detailModal').style.display = 'flex';
         }
