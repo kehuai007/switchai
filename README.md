@@ -82,9 +82,17 @@ switchai-windows-amd64.exe -install -p 8080
 
 # 卸载系统服务
 switchai-windows-amd64.exe -uninstall
+
+# 跳过认证模式（内网部署，无需密钥密码）
+switchai-windows-amd64.exe -skip
+
+# 跳过认证并指定端口
+switchai-windows-amd64.exe -p 8080 -skip
 ```
 
 **首次启动**: 首次访问时，会显示 2FA 二维码，绑定 authenticator 应用后使用生成的 6 位验证码登录。若忘记密钥，删除配置文件重新运行。
+
+**内网部署**: 使用 `-skip` 参数启动时，全程不需要密钥密码即可使用，适合内网部署场景。
 
 ## 服务安装
 

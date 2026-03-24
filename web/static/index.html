@@ -80,6 +80,10 @@
         .key-item-info h4 { color: #333; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
         .key-item-info p { color: #666; font-size: 14px; margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .key-item-info .key-value { font-family: monospace; font-size: 12px; color: #667eea; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+        .key-item-info .key-value-masked { font-family: monospace; font-size: 12px; color: #667eea; cursor: pointer; user-select: none; }
+        .key-item-info .key-value-masked:hover { text-decoration: underline; }
+        .provider-key-masked { font-family: monospace; font-size: 12px; color: #667eea; cursor: pointer; user-select: none; }
+        .provider-key-masked:hover { text-decoration: underline; }
         .key-item-stats { display: flex; gap: 20px; flex-shrink: 0; padding-top: 0; border-top: none; }
         .key-stat { text-align: center; }
         .key-stat-value { font-size: 18px; font-weight: bold; color: #667eea; }
@@ -274,7 +278,10 @@
                 <input type="hidden" name="id" id="editKeyId">
                 <div class="form-group">
                     <label>密钥</label>
-                    <input type="text" id="editKeyValue" disabled style="background: #f0f0f0;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span id="editKeyValueDisplay" style="font-family: monospace; color: #667eea; flex: 1;"></span>
+                        <button type="button" class="btn-primary" onclick="toggleEditKeyVisibility()" style="padding: 5px 10px; font-size: 12px;">显示/隐藏</button>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>备注</label>
@@ -543,7 +550,7 @@
                                     ${k.remark || '未备注'}
                                     ${k.is_enabled ? '<span class="badge badge-active">启用</span>' : '<span class="badge badge-inactive">禁用</span>'}
                                 </h4>
-                                <p><span class="key-value">${k.key}</span></p>
+                                <p><span class="key-value-masked" onclick="toggleKeyVisibility(this, '${k.key}')" title="点击显示密钥">${'•'.repeat(k.key.length)}</span></p>
                             </div>
                         </div>
                         <div class="key-item-stats">
@@ -586,12 +593,46 @@
             });
         }
 
+        // 切换服务器密钥显示/隐藏
+        function toggleKeyVisibility(el, key) {
+            if (el.textContent === '•'.repeat(key.length)) {
+                el.textContent = key;
+                el.className = 'key-value';
+            } else {
+                el.textContent = '•'.repeat(key.length);
+                el.className = 'key-value-masked';
+            }
+        }
+
+        // 切换提供商密钥显示/隐藏
+        function toggleProviderKeyVisibility(el, apiKey) {
+            const len = apiKey.length > 24 ? 24 : apiKey.length;
+            const masked = '•'.repeat(len) + (apiKey.length > 24 ? '...' : '');
+            if (el.textContent === masked) {
+                el.textContent = apiKey;
+            } else {
+                el.textContent = masked;
+            }
+        }
+
+        let currentEditKey = '';
+
+        function toggleEditKeyVisibility() {
+            const display = document.getElementById('editKeyValueDisplay');
+            if (display.textContent === '•'.repeat(currentEditKey.length)) {
+                display.textContent = currentEditKey;
+            } else {
+                display.textContent = '•'.repeat(currentEditKey.length);
+            }
+        }
+
         function editKey(id) {
             const key = serverKeys.find(k => k.id === id);
             if (!key) return;
 
+            currentEditKey = key.key;
             document.getElementById('editKeyId').value = key.id;
-            document.getElementById('editKeyValue').value = key.key;
+            document.getElementById('editKeyValueDisplay').textContent = '•'.repeat(key.key.length);
             document.getElementById('editKeyRemark').value = key.remark || '';
             document.getElementById('editKeyEnabled').checked = key.is_enabled;
 
@@ -638,10 +679,19 @@
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                console.log('WebSocket message received:', data);
                 if (data.total_input_tokens !== undefined) {
                     updateStats(data);
+                    // 更新密钥统计
+                    if (data.key_stats) {
+                        keyStats = {};
+                        data.key_stats.forEach(stat => {
+                            keyStats[stat.key_id] = stat;
+                        });
+                        renderServerKeys();
+                    }
                 } else if (data.input_tokens !== undefined) {
-                    console.log('New token usage:', data);
+                    console.log('New token usage received, refreshing stats...');
                     loadStats();
                 }
             };
@@ -707,7 +757,7 @@
                                 ${p.id === activeProvider ? '<span class="badge badge-active">当前使用</span>' : '<span class="badge badge-inactive">未激活</span>'}
                             </h4>
                             <p><span class="provider-url">${p.base_url}</span></p>
-                            <p>Key: <span style="color: #667eea;">${p.api_key.length > 24 ? p.api_key.substring(0, 24) + '...' : p.api_key}</span></p>
+                            <p>Key: <span class="provider-key-masked" onclick="toggleProviderKeyVisibility(this, '${p.api_key}')" title="点击显示密钥">${'•'.repeat(p.api_key.length > 24 ? 24 : p.api_key.length)}${p.api_key.length > 24 ? '...' : ''}</span></p>
                         </div>
                     </div>
                     <div class="provider-item-stats">

@@ -28,7 +28,13 @@ func main() {
 	port := flag.String("p", "7777", "Port to listen on")
 	install := flag.Bool("install", false, "Install as system service")
 	uninstall := flag.Bool("uninstall", false, "Uninstall system service")
+	skipAuth := flag.Bool("skip", false, "Skip authentication (for internal network deployment)")
 	flag.Parse()
+
+	// Set skip auth mode in config
+	if *skipAuth {
+		config.SetSkipAuth(true)
+	}
 
 	// Handle service installation/uninstallation
 	if *install {
@@ -118,6 +124,9 @@ func startServer(port string) {
 
 	logger.Info("Shutting down server...")
 	fmt.Println("\n🛑 正在关闭服务器...")
+
+	// 关闭数据库连接
+	config.Shutdown()
 
 	// 立即保存统计数据
 	stats.Shutdown()

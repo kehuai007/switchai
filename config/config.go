@@ -2,14 +2,14 @@ package config
 
 import (
 	"crypto/rand"
-	"encoding/json"
-	"os"
+	"database/sql"
 	"sort"
 	"switchai/appdata"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	_ "modernc.org/sqlite"
 )
 
 type Provider struct {
@@ -34,55 +34,171 @@ type ServerKey struct {
 }
 
 type Config struct {
-	Providers     []Provider  `json:"providers"`
-	ServerKeys    []ServerKey `json:"server_keys"` // 服务器密钥列表
-	ActiveProvider string     `json:"active_provider"`
-	TOTPSecret    string     `json:"totp_secret"`  // TOTP 2FA 密钥
-	TOTPEnabled   bool       `json:"totp_enabled"` // 是否已启用 2FA
-	SessionToken  string     `json:"session_token"` // 持久化的会话 token
-	SessionExpiry int64      `json:"session_expiry"` // 会话过期时间戳
-	mu           sync.RWMutex
+	Providers      []Provider  `json:"providers"`
+	ServerKeys     []ServerKey `json:"server_keys"` // 服务器密钥列表
+	ActiveProvider string      `json:"active_provider"`
+	TOTPSecret    string      `json:"totp_secret"`    // TOTP 2FA 密钥
+	TOTPEnabled   bool        `json:"totp_enabled"`    // 是否已启用 2FA
+	SessionToken  string      `json:"session_token"`   // 持久化的会话 token
+	SessionExpiry int64       `json:"session_expiry"`  // 会话过期时间戳
+	SkipAuth      bool        `json:"skip_auth"`       // 跳过认证（内网部署）
+	mu            sync.RWMutex
+}
+
+var skipAuthMode bool
+
+// SetSkipAuth 设置跳过认证模式
+func SetSkipAuth(skip bool) {
+	skipAuthMode = skip
+}
+
+// IsSkipAuth 返回是否跳过认证模式
+func IsSkipAuth() bool {
+	return skipAuthMode
 }
 
 var cfg *Config
+var db *sql.DB
 
-// getConfigFile 返回配置文件路径
-func getConfigFile() string {
-	return appdata.GetConfigPath("providers.json")
+// getDBPath 返回数据库文件路径
+func getDBPath() string {
+	return appdata.GetConfigPath("config.db")
 }
 
 func Init() error {
-	cfg = &Config{
-		Providers: []Provider{},
+	// 初始化数据库
+	var err error
+	dbPath := getDBPath()
+	db, err = sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
 	}
 
-	// 尝试加载配置文件
+	// 创建表
+	if err := initDB(); err != nil {
+		db.Close()
+		return err
+	}
+
+	cfg = &Config{}
+
+	// 加载配置
 	if err := cfg.Load(); err != nil {
-		// 如果文件不存在，创建默认配置
-		if os.IsNotExist(err) {
-			return cfg.Save()
-		}
 		return err
 	}
 
 	return nil
 }
 
+func initDB() error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS config (
+		key TEXT PRIMARY KEY,
+		value TEXT
+	);
+	CREATE TABLE IF NOT EXISTS providers (
+		id TEXT PRIMARY KEY,
+		name TEXT,
+		base_url TEXT,
+		api_key TEXT,
+		model TEXT,
+		is_active INTEGER,
+		created_at TEXT,
+		order_num INTEGER
+	);
+	CREATE TABLE IF NOT EXISTS server_keys (
+		id TEXT PRIMARY KEY,
+		key TEXT,
+		remark TEXT,
+		is_enabled INTEGER,
+		created_at TEXT,
+		order_num INTEGER
+	);
+	`
+	_, err := db.Exec(schema)
+	return err
+}
+
 func (c *Config) Load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	data, err := os.ReadFile(getConfigFile())
+	// 加载 active_provider
+	var activeProvider string
+	err := db.QueryRow("SELECT value FROM config WHERE key = 'active_provider'").Scan(&activeProvider)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	c.ActiveProvider = activeProvider
+
+	// 加载 totp_secret
+	var totpSecret string
+	err = db.QueryRow("SELECT value FROM config WHERE key = 'totp_secret'").Scan(&totpSecret)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	c.TOTPSecret = totpSecret
+
+	// 加载 totp_enabled
+	var totpEnabled int
+	err = db.QueryRow("SELECT value FROM config WHERE key = 'totp_enabled'").Scan(&totpEnabled)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	c.TOTPEnabled = totpEnabled == 1
+
+	// 加载 session_token
+	var sessionToken string
+	err = db.QueryRow("SELECT value FROM config WHERE key = 'session_token'").Scan(&sessionToken)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	c.SessionToken = sessionToken
+
+	// 加载 session_expiry
+	var sessionExpiry int64
+	err = db.QueryRow("SELECT value FROM config WHERE key = 'session_expiry'").Scan(&sessionExpiry)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	c.SessionExpiry = sessionExpiry
+
+	// 加载 providers
+	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num FROM providers ORDER BY order_num")
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 
-	if err := json.Unmarshal(data, c); err != nil {
-		return err
+	c.Providers = nil
+	for rows.Next() {
+		var p Provider
+		var isActive int
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order); err != nil {
+			return err
+		}
+		p.IsActive = isActive == 1
+		c.Providers = append(c.Providers, p)
 	}
 
-	// 加载后按序号排序
-	c.sortProviders()
+	// 加载 server_keys
+	rows, err = db.Query("SELECT id, key, remark, is_enabled, created_at, order_num FROM server_keys ORDER BY order_num")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	c.ServerKeys = nil
+	for rows.Next() {
+		var k ServerKey
+		var isEnabled int
+		if err := rows.Scan(&k.ID, &k.Key, &k.Remark, &isEnabled, &k.CreatedAt, &k.Order); err != nil {
+			return err
+		}
+		k.IsEnabled = isEnabled == 1
+		c.ServerKeys = append(c.ServerKeys, k)
+	}
+
 	return nil
 }
 
@@ -94,12 +210,75 @@ func (c *Config) Save() error {
 }
 
 func (c *Config) save() error {
-	data, err := json.MarshalIndent(c, "", "  ")
+	// 保存 active_provider
+	_, err := db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('active_provider', ?)", c.ActiveProvider)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(getConfigFile(), data, 0644)
+	// 保存 totp_secret
+	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('totp_secret', ?)", c.TOTPSecret)
+	if err != nil {
+		return err
+	}
+
+	// 保存 totp_enabled
+	totpEnabled := 0
+	if c.TOTPEnabled {
+		totpEnabled = 1
+	}
+	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('totp_enabled', ?)", totpEnabled)
+	if err != nil {
+		return err
+	}
+
+	// 保存 session_token
+	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('session_token', ?)", c.SessionToken)
+	if err != nil {
+		return err
+	}
+
+	// 保存 session_expiry
+	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('session_expiry', ?)", c.SessionExpiry)
+	if err != nil {
+		return err
+	}
+
+	// 删除并重新插入 providers
+	_, err = db.Exec("DELETE FROM providers")
+	if err != nil {
+		return err
+	}
+	for _, p := range c.Providers {
+		isActive := 0
+		if p.IsActive {
+			isActive = 1
+		}
+		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order)
+		if err != nil {
+			return err
+		}
+	}
+
+	// 删除并重新插入 server_keys
+	_, err = db.Exec("DELETE FROM server_keys")
+	if err != nil {
+		return err
+	}
+	for _, k := range c.ServerKeys {
+		isEnabled := 0
+		if k.IsEnabled {
+			isEnabled = 1
+		}
+		_, err = db.Exec("INSERT INTO server_keys (id, key, remark, is_enabled, created_at, order_num) VALUES (?, ?, ?, ?, ?, ?)",
+			k.ID, k.Key, k.Remark, isEnabled, k.CreatedAt, k.Order)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func GetConfig() *Config {
@@ -416,4 +595,11 @@ func (c *Config) ClearSessionToken() error {
 	c.SessionToken = ""
 	c.SessionExpiry = 0
 	return c.save()
+}
+
+// Shutdown 关闭数据库连接
+func Shutdown() {
+	if db != nil {
+		db.Close()
+	}
 }

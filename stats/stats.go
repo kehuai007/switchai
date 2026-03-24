@@ -1,15 +1,20 @@
 package stats
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
-	"switchai/appdata"
-	"switchai/logger"
 	"sync"
 	"time"
 
+	"switchai/appdata"
+	"switchai/history"
+	"switchai/logger"
+
 	"github.com/gorilla/websocket"
+	_ "modernc.org/sqlite"
 )
 
 type UsageRecord struct {
@@ -43,57 +48,113 @@ type KeyStats struct {
 	OutputTokens int      `json:"output_tokens"`
 	TotalTokens  int      `json:"total_tokens"`
 	TotalCost    float64  `json:"total_cost"`
-	IPAddresses  []string `json:"ip_addresses"` // 去重IP列表
+	IPAddresses  []string `json:"ip_addresses"`
 	RequestCount int      `json:"request_count"`
 }
 
+var (
+	db    *sql.DB
+	stats *Stats
+)
+
 type Stats struct {
-	Records       []UsageRecord               `json:"records"`
-	ProviderStats map[string]*ProviderStats   `json:"provider_stats"`
-	KeyStats      map[string]*KeyStats        `json:"key_stats"` // 按密钥ID的统计
-	mu            sync.RWMutex
-	clients       map[*websocket.Conn]bool
-	broadcast     chan UsageRecord
-	dirty         bool // 标记数据是否需要保存
+	mu       sync.RWMutex
+	clients  map[*websocket.Conn]bool
+	broadcast chan UsageRecord
 }
-
-type PersistentStats struct {
-	Records       []UsageRecord               `json:"records"`
-	ProviderStats map[string]*ProviderStats   `json:"provider_stats"`
-	KeyStats      map[string]*KeyStats        `json:"key_stats"`
-}
-
-var stats *Stats
 
 func Init() {
+	dataDir := appdata.GetDataDir()
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		logger.Error("Failed to create data dir: %v", err)
+		return
+	}
+
+	dbPath := filepath.Join(dataDir, "stats.db")
+	var err error
+	db, err = sql.Open("sqlite", dbPath)
+	if err != nil {
+		logger.Error("Failed to open stats db: %v", err)
+		return
+	}
+
+	if err := initDB(); err != nil {
+		logger.Error("Failed to init stats db: %v", err)
+		db.Close()
+		return
+	}
+
 	stats = &Stats{
-		Records:       []UsageRecord{},
-		ProviderStats: make(map[string]*ProviderStats),
-		KeyStats:      make(map[string]*KeyStats),
-		clients:       make(map[*websocket.Conn]bool),
-		broadcast:     make(chan UsageRecord, 100),
-		dirty:         false,
+		clients:   make(map[*websocket.Conn]bool),
+		broadcast: make(chan UsageRecord, 100),
 	}
 
-	// 从文件加载统计数据
-	if err := stats.loadFromFile(); err != nil {
-		logger.Info("⚠️ 加载统计数据失败: %v，使用空数据", err)
-	} else {
-		logger.Info("✅ 统计数据已从文件加载")
-	}
-
-	// 启动广播协程
 	go stats.handleBroadcast()
 
-	// 启动定时保存协程
-	go stats.autoSave()
+	logger.Info("✅ 统计数据已从数据库加载")
+}
+
+func initDB() error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS usage_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id TEXT NOT NULL,
+		provider_name TEXT,
+		model TEXT,
+		input_tokens INTEGER,
+		output_tokens INTEGER,
+		total_tokens INTEGER,
+		cost REAL,
+		duration_ms INTEGER,
+		time_to_first_ms INTEGER,
+		timestamp INTEGER NOT NULL,
+		group_name TEXT,
+		type_name TEXT,
+		key_id TEXT,
+		client_ip TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS provider_stats (
+		provider_id TEXT PRIMARY KEY,
+		provider_name TEXT,
+		input_tokens INTEGER DEFAULT 0,
+		output_tokens INTEGER DEFAULT 0,
+		total_tokens INTEGER DEFAULT 0,
+		total_cost REAL DEFAULT 0,
+		request_count INTEGER DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS key_stats (
+		key_id TEXT PRIMARY KEY,
+		input_tokens INTEGER DEFAULT 0,
+		output_tokens INTEGER DEFAULT 0,
+		total_tokens INTEGER DEFAULT 0,
+		total_cost REAL DEFAULT 0,
+		ip_addresses TEXT DEFAULT '[]',
+		request_count INTEGER DEFAULT 0
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp DESC);
+	CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_records(provider_id);
+	CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_records(key_id);
+	`
+	_, err := db.Exec(schema)
+	return err
+}
+
+func Shutdown() {
+	if db != nil {
+		db.Close()
+	}
 }
 
 func (s *Stats) handleBroadcast() {
 	for record := range s.broadcast {
+		// 获取完整统计摘要广播给所有 stats WebSocket 客户端
+		summary := s.GetSummary()
 		s.mu.RLock()
 		for client := range s.clients {
-			err := client.WriteJSON(record)
+			err := client.WriteJSON(summary)
 			if err != nil {
 				logger.Error("WebSocket write error: %v", err)
 				client.Close()
@@ -101,6 +162,11 @@ func (s *Stats) handleBroadcast() {
 			}
 		}
 		s.mu.RUnlock()
+
+		// 同时广播单条记录给 history WebSocket 客户端
+		history.BroadcastRecord(record.ProviderID, record.ProviderName, record.Model,
+			record.InputTokens, record.OutputTokens, record.Cost, record.Duration,
+			record.Timestamp, "", "")
 	}
 }
 
@@ -117,95 +183,117 @@ func (s *Stats) RemoveClient(conn *websocket.Conn) {
 	conn.Close()
 }
 
-func (s *Stats) loadFromFile() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	data, err := os.ReadFile(appdata.GetConfigPath("stats/stats.json"))
-	if err != nil {
-		return err
-	}
-
-	var persistent PersistentStats
-	if err := json.Unmarshal(data, &persistent); err != nil {
-		return err
-	}
-
-	s.Records = persistent.Records
-	s.ProviderStats = persistent.ProviderStats
-	if persistent.KeyStats != nil {
-		s.KeyStats = persistent.KeyStats
-	}
-
-	return nil
-}
-
-func (s *Stats) saveToFile() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	persistent := PersistentStats{
-		Records:       s.Records,
-		ProviderStats: s.ProviderStats,
-		KeyStats:      s.KeyStats,
-	}
-
-	data, err := json.MarshalIndent(persistent, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	// 确保目录存在
-	statsDir := appdata.GetDataDir() + "/stats"
-	os.MkdirAll(statsDir, 0755)
-
-	return os.WriteFile(appdata.GetConfigPath("stats/stats.json"), data, 0644)
-}
-
-// autoSave 定时保存数据
-func (s *Stats) autoSave() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		s.mu.Lock()
-		if s.dirty {
-			s.mu.Unlock()
-			if err := s.saveToFile(); err != nil {
-				logger.Error("⚠️ 自动保存统计数据失败: %v", err)
-			} else {
-				s.mu.Lock()
-				s.dirty = false
-				s.mu.Unlock()
-			}
-		} else {
-			s.mu.Unlock()
+func maskKeyID(keyID string) string {
+	if len(keyID) <= 8 {
+		if len(keyID) == 0 {
+			return "(empty)"
 		}
+		return keyID[:len(keyID)/2] + "..."
 	}
-}
-
-// Shutdown 立即保存数据（用于程序退出时）
-func Shutdown() {
-	if stats == nil {
-		return
-	}
-
-	stats.mu.Lock()
-	needSave := stats.dirty
-	stats.mu.Unlock()
-
-	if needSave {
-		if err := stats.saveToFile(); err != nil {
-			logger.Error("⚠️ 保存统计数据失败: %v", err)
-		} else {
-			logger.Info("✅ 统计数据已保存")
-		}
-	}
+	return keyID[:8] + "..."
 }
 
 func RecordUsage(providerID, providerName, model, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64, keyID, clientIP string) {
-	stats.mu.Lock()
+	if db == nil {
+		return
+	}
 
+	tx, err := db.Begin()
+	if err != nil {
+		logger.Error("Failed to begin transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
+	// Insert usage record
+	_, err = tx.Exec(`
+		INSERT INTO usage_records (provider_id, provider_name, model, input_tokens, output_tokens, total_tokens,
+			cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name, key_id, client_ip)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		providerID, providerName, model, inputTokens, outputTokens, inputTokens+outputTokens,
+		cost, duration, timeToFirst, time.Now().UnixNano(), group, reqType, keyID, clientIP)
+	if err != nil {
+		logger.Error("Failed to insert usage record: %v", err)
+		return
+	}
+
+	// Maintain max 1000 records - delete oldest if over limit
+	_, err = tx.Exec(`DELETE FROM usage_records WHERE id NOT IN (SELECT id FROM usage_records ORDER BY timestamp DESC LIMIT 1000)`)
+	if err != nil {
+		logger.Error("Failed to trim usage records: %v", err)
+		return
+	}
+
+	// Upsert provider_stats
+	_, err = tx.Exec(`
+		INSERT INTO provider_stats (provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(provider_id) DO UPDATE SET
+			provider_name = excluded.provider_name,
+			input_tokens = input_tokens + excluded.input_tokens,
+			output_tokens = output_tokens + excluded.output_tokens,
+			total_tokens = total_tokens + excluded.total_tokens,
+			total_cost = total_cost + excluded.total_cost,
+			request_count = request_count + 1`,
+		providerID, providerName, inputTokens, outputTokens, inputTokens+outputTokens, cost)
+	if err != nil {
+		logger.Error("Failed to upsert provider stats: %v", err)
+		return
+	}
+
+	// Upsert key_stats
+	if keyID != "" {
+		// Get existing ip_addresses
+		var existingIPs string
+		err = tx.QueryRow(`SELECT ip_addresses FROM key_stats WHERE key_id = ?`, keyID).Scan(&existingIPs)
+		if err != nil && err != sql.ErrNoRows {
+			// 如果是真正的数据库错误，记录日志但继续执行（使用空列表）
+			logger.Error("Failed to get existing key stats: %v", err)
+		}
+
+		var ips []string
+		if err == nil && existingIPs != "" {
+			json.Unmarshal([]byte(existingIPs), &ips)
+		}
+
+		// Add new IP if not exists
+		if clientIP != "" {
+			found := false
+			for _, ip := range ips {
+				if ip == clientIP {
+					found = true
+					break
+				}
+			}
+			if !found {
+				ips = append(ips, clientIP)
+			}
+		}
+
+		ipsJSON, _ := json.Marshal(ips)
+		_, err = tx.Exec(`
+			INSERT INTO key_stats (key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count)
+			VALUES (?, ?, ?, ?, ?, ?, 1)
+			ON CONFLICT(key_id) DO UPDATE SET
+				input_tokens = input_tokens + excluded.input_tokens,
+				output_tokens = output_tokens + excluded.output_tokens,
+				total_tokens = total_tokens + excluded.total_tokens,
+				total_cost = total_cost + excluded.total_cost,
+				ip_addresses = excluded.ip_addresses,
+				request_count = request_count + 1`,
+			keyID, inputTokens, outputTokens, inputTokens+outputTokens, cost, string(ipsJSON))
+		if err != nil {
+			logger.Error("Failed to upsert key stats: %v", err)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Error("Failed to commit transaction: %v", err)
+		return
+	}
+
+	// Log
 	record := UsageRecord{
 		ProviderID:   providerID,
 		ProviderName: providerName,
@@ -221,65 +309,9 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		Type:         reqType,
 	}
 
-	stats.Records = append(stats.Records, record)
-
-	// 只保留最近 1000 条记录
-	if len(stats.Records) > 1000 {
-		stats.Records = stats.Records[len(stats.Records)-1000:]
-	}
-
-	// 更新供应商统计
-	if _, exists := stats.ProviderStats[providerID]; !exists {
-		stats.ProviderStats[providerID] = &ProviderStats{
-			ProviderID:   providerID,
-			ProviderName: providerName,
-		}
-	}
-	providerStat := stats.ProviderStats[providerID]
-	providerStat.ProviderName = providerName // 每次都更新名字，确保同步
-	providerStat.InputTokens += inputTokens
-	providerStat.OutputTokens += outputTokens
-	providerStat.TotalTokens += inputTokens + outputTokens
-	providerStat.TotalCost += cost
-	providerStat.RequestCount++
-
-	// 更新密钥统计
-	if keyID != "" {
-		if _, exists := stats.KeyStats[keyID]; !exists {
-			stats.KeyStats[keyID] = &KeyStats{
-				KeyID:       keyID,
-				IPAddresses: []string{},
-			}
-		}
-		keyStat := stats.KeyStats[keyID]
-		keyStat.InputTokens += inputTokens
-		keyStat.OutputTokens += outputTokens
-		keyStat.TotalTokens += inputTokens + outputTokens
-		keyStat.TotalCost += cost
-		keyStat.RequestCount++
-
-		// 添加IP到列表（如果不存在）
-		if clientIP != "" {
-			ipExists := false
-			for _, ip := range keyStat.IPAddresses {
-				if ip == clientIP {
-					ipExists = true
-					break
-				}
-			}
-			if !ipExists {
-				keyStat.IPAddresses = append(keyStat.IPAddresses, clientIP)
-			}
-		}
-	}
-
-	stats.dirty = true // 标记需要保存
-	stats.mu.Unlock()
-
-	// 打印日志
 	logger.Info("📊 Token统计 | 时间: %s | 密钥: %s | 令牌: %d输入/%d输出 | 分组: %s | 类型: %s | 模型: %s | 用时: %dms | 首字: %dms | 花费: $%.6f | IP: %s",
 		record.Timestamp.Format("15:04:05"),
-		keyID[:8]+"...",
+		maskKeyID(keyID),
 		inputTokens,
 		outputTokens,
 		group,
@@ -291,12 +323,8 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		clientIP,
 	)
 
-	// 广播到所有WebSocket客户端
-	select {
-	case stats.broadcast <- record:
-	default:
-		logger.Info("Broadcast channel full, skipping")
-	}
+	// Broadcast - block if channel is full to ensure delivery
+	stats.broadcast <- record
 }
 
 func GetStats() *Stats {
@@ -304,128 +332,250 @@ func GetStats() *Stats {
 }
 
 func (s *Stats) GetSummary() map[string]interface{} {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// 从 KeyStats 计算所有总数，确保总数 = 各密钥统计之和
-	totalInput := 0
-	totalOutput := 0
-	totalRequestCount := 0
-	totalCost := 0.0
-
-	for _, keyStat := range s.KeyStats {
-		totalInput += keyStat.InputTokens
-		totalOutput += keyStat.OutputTokens
-		totalRequestCount += keyStat.RequestCount
-		totalCost += keyStat.TotalCost
+	if db == nil {
+		return emptySummary()
 	}
 
-	// 转换为数组格式并按供应商名称字母序排序
-	providerStatsArray := make([]*ProviderStats, 0, len(s.ProviderStats))
-	for _, stat := range s.ProviderStats {
-		providerStatsArray = append(providerStatsArray, stat)
+	// Get provider stats
+	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count FROM provider_stats`)
+	if err != nil {
+		logger.Error("Failed to get provider stats: %v", err)
+		return emptySummary()
 	}
-	// 按供应商名称字母序排序，固定列表顺序
+	defer providerRows.Close()
+
+	var providerStatsArray []*ProviderStats
+	for providerRows.Next() {
+		var ps ProviderStats
+		if err := providerRows.Scan(&ps.ProviderID, &ps.ProviderName, &ps.InputTokens, &ps.OutputTokens, &ps.TotalTokens, &ps.TotalCost, &ps.RequestCount); err != nil {
+			continue
+		}
+		providerStatsArray = append(providerStatsArray, &ps)
+	}
 	sort.Slice(providerStatsArray, func(i, j int) bool {
 		return providerStatsArray[i].ProviderName < providerStatsArray[j].ProviderName
 	})
 
-	// 转换为密钥统计数组
-	keyStatsArray := make([]*KeyStats, 0, len(s.KeyStats))
-	for _, stat := range s.KeyStats {
-		keyStatsArray = append(keyStatsArray, stat)
+	// Get key stats
+	keyRows, err := db.Query(`SELECT key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count FROM key_stats`)
+	if err != nil {
+		logger.Error("Failed to get key stats: %v", err)
+		return emptySummary()
 	}
-	// 按密钥创建时间排序
+	defer keyRows.Close()
+
+	var keyStatsArray []*KeyStats
+	for keyRows.Next() {
+		var ks KeyStats
+		var ipsJSON string
+		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount); err != nil {
+			continue
+		}
+		json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
+		keyStatsArray = append(keyStatsArray, &ks)
+	}
 	sort.Slice(keyStatsArray, func(i, j int) bool {
 		return keyStatsArray[i].KeyID < keyStatsArray[j].KeyID
 	})
 
+	// Get totals directly from usage_records to ensure consistency with individual key stats
+	var totalInput, totalOutput, totalRequestCount int
+	var totalCost float64
+	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0) FROM usage_records`).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
+	if err != nil {
+		logger.Error("Failed to get totals from usage_records: %v", err)
+	}
+
+	// Get recent records (last 10)
+	recordRows, err := db.Query(`SELECT provider_id, provider_name, model, input_tokens, output_tokens, total_tokens, cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name FROM usage_records ORDER BY timestamp DESC LIMIT 10`)
+	if err != nil {
+		logger.Error("Failed to get recent records: %v", err)
+		return emptySummary()
+	}
+	defer recordRows.Close()
+
+	var recentRecords []UsageRecord
+	for recordRows.Next() {
+		var r UsageRecord
+		var timestamp int64
+		if err := recordRows.Scan(&r.ProviderID, &r.ProviderName, &r.Model, &r.InputTokens, &r.OutputTokens, &r.TotalTokens, &r.Cost, &r.Duration, &r.TimeToFirst, &timestamp, &r.Group, &r.Type); err != nil {
+			continue
+		}
+		r.Timestamp = time.Unix(0, timestamp)
+		recentRecords = append(recentRecords, r)
+	}
+
 	return map[string]interface{}{
-		"total_input_tokens":  totalInput,
-		"total_output_tokens": totalOutput,
+		"total_input_tokens":   totalInput,
+		"total_output_tokens":  totalOutput,
 		"total_tokens":        totalInput + totalOutput,
 		"total_cost":          totalCost,
-		"total_request_count": totalRequestCount,
-		"provider_stats":      providerStatsArray,
+		"total_request_count":  totalRequestCount,
+		"provider_stats":       providerStatsArray,
 		"key_stats":           keyStatsArray,
-		"recent_records":      s.Records[max(0, len(s.Records)-10):],
+		"recent_records":       recentRecords,
 	}
 }
 
-// GetKeyStats 获取指定密钥的统计信息
+func emptySummary() map[string]interface{} {
+	return map[string]interface{}{
+		"total_input_tokens":   0,
+		"total_output_tokens":  0,
+		"total_tokens":         0,
+		"total_cost":           0.0,
+		"total_request_count":   0,
+		"provider_stats":       []*ProviderStats{},
+		"key_stats":           []*KeyStats{},
+		"recent_records":       []UsageRecord{},
+	}
+}
+
 func GetKeyStats(keyID string) *KeyStats {
-	stats.mu.RLock()
-	defer stats.mu.RUnlock()
-
-	if stat, exists := stats.KeyStats[keyID]; exists {
-		return stat
+	if db == nil {
+		return nil
 	}
-	return nil
+
+	var ks KeyStats
+	var ipsJSON string
+	err := db.QueryRow(`SELECT key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count FROM key_stats WHERE key_id = ?`, keyID).Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount)
+	if err != nil {
+		return nil
+	}
+	json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
+	return &ks
 }
 
-// ResetStats 重置所有统计数据
 func ResetStats() {
-	stats.mu.Lock()
-	stats.Records = []UsageRecord{}
-	stats.ProviderStats = make(map[string]*ProviderStats)
-	stats.KeyStats = make(map[string]*KeyStats)
-	stats.dirty = true
-	stats.mu.Unlock()
-
-	logger.Info("✅ 所有统计数据已重置")
-
-	// 立即保存到文件
-	if err := stats.saveToFile(); err != nil {
-		logger.Error("⚠️ 保存统计数据失败: %v", err)
+	if db == nil {
+		return
 	}
+
+	_, err := db.Exec(`DELETE FROM usage_records; DELETE FROM provider_stats; DELETE FROM key_stats;`)
+	if err != nil {
+		logger.Error("Failed to reset stats: %v", err)
+	}
+	logger.Info("✅ 所有统计数据已重置")
 }
 
-// ResetProviderStats 重置指定供应商的统计数据
 func ResetProviderStats(providerID string) {
-	stats.mu.Lock()
+	if db == nil {
+		return
+	}
 
-	// 删除该供应商的统计
-	delete(stats.ProviderStats, providerID)
+	tx, err := db.Begin()
+	if err != nil {
+		logger.Error("Failed to begin transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
 
-	// 删除该供应商的记录
-	newRecords := make([]UsageRecord, 0)
-	for _, record := range stats.Records {
-		if record.ProviderID != providerID {
-			newRecords = append(newRecords, record)
+	// First get all key_ids that have usage_records for this provider
+	rows, err := tx.Query(`SELECT DISTINCT key_id FROM usage_records WHERE provider_id = ?`, providerID)
+	if err != nil {
+		logger.Error("Failed to get key_ids: %v", err)
+		return
+	}
+	var keyIDs []string
+	for rows.Next() {
+		var keyID string
+		if err := rows.Scan(&keyID); err != nil {
+			continue
+		}
+		keyIDs = append(keyIDs, keyID)
+	}
+	rows.Close()
+
+	// Delete usage_records for this provider
+	_, err = tx.Exec(`DELETE FROM usage_records WHERE provider_id = ?`, providerID)
+	if err != nil {
+		logger.Error("Failed to reset provider usage records: %v", err)
+		return
+	}
+
+	// Delete provider_stats for this provider
+	_, err = tx.Exec(`DELETE FROM provider_stats WHERE provider_id = ?`, providerID)
+	if err != nil {
+		logger.Error("Failed to reset provider stats: %v", err)
+		return
+	}
+
+	// Recalculate key_stats for affected keys based on remaining usage_records
+	for _, keyID := range keyIDs {
+		// Get aggregated stats from remaining usage_records for this key
+		var inputTokens, outputTokens, totalTokens, requestCount int
+		var totalCost float64
+		var ipsJSON string
+
+		err := tx.QueryRow(`
+			SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+				COALESCE(SUM(total_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0),
+				COALESCE((SELECT ip_addresses FROM key_stats WHERE key_id = ?), '[]')
+			FROM usage_records WHERE key_id = ?`, keyID, keyID).Scan(
+			&inputTokens, &outputTokens, &totalTokens, &requestCount, &totalCost, &ipsJSON)
+		if err != nil && err != sql.ErrNoRows {
+			logger.Error("Failed to recalculate key stats for %s: %v", keyID, err)
+			continue
+		}
+
+		if requestCount == 0 {
+			// No more usage_records for this key, delete the key_stats entry
+			_, err = tx.Exec(`DELETE FROM key_stats WHERE key_id = ?`, keyID)
+			if err != nil {
+				logger.Error("Failed to delete key_stats for %s: %v", keyID, err)
+			}
+		} else {
+			// Update key_stats with recalculated values
+			_, err = tx.Exec(`
+				UPDATE key_stats SET
+					input_tokens = ?,
+					output_tokens = ?,
+					total_tokens = ?,
+					total_cost = ?,
+					request_count = ?
+				WHERE key_id = ?`,
+				inputTokens, outputTokens, totalTokens, totalCost, requestCount, keyID)
+			if err != nil {
+				logger.Error("Failed to update key_stats for %s: %v", keyID, err)
+			}
 		}
 	}
-	stats.Records = newRecords
-	stats.dirty = true
-	stats.mu.Unlock()
+
+	if err := tx.Commit(); err != nil {
+		logger.Error("Failed to commit: %v", err)
+		return
+	}
 
 	logger.Info("✅ 供应商 %s 的统计数据已重置", providerID)
-
-	// 立即保存到文件
-	if err := stats.saveToFile(); err != nil {
-		logger.Error("⚠️ 保存统计数据失败: %v", err)
-	}
 }
 
-// ResetKeyStats 重置指定密钥的统计数据
 func ResetKeyStats(keyID string) {
-	stats.mu.Lock()
+	if db == nil {
+		return
+	}
 
-	// 删除该密钥的统计
-	delete(stats.KeyStats, keyID)
-	stats.dirty = true
-	stats.mu.Unlock()
+	tx, err := db.Begin()
+	if err != nil {
+		logger.Error("Failed to begin transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`DELETE FROM key_stats WHERE key_id = ?`, keyID)
+	if err != nil {
+		logger.Error("Failed to reset key stats: %v", err)
+		return
+	}
+
+	_, err = tx.Exec(`DELETE FROM usage_records WHERE key_id = ?`, keyID)
+	if err != nil {
+		logger.Error("Failed to reset key usage records: %v", err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Error("Failed to commit: %v", err)
+		return
+	}
 
 	logger.Info("✅ 密钥 %s 的统计数据已重置", keyID)
-
-	// 立即保存到文件
-	if err := stats.saveToFile(); err != nil {
-		logger.Error("⚠️ 保存统计数据失败: %v", err)
-	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

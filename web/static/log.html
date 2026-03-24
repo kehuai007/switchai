@@ -43,7 +43,7 @@
         .log-link { color: #667eea; cursor: pointer; text-decoration: underline; }
         .log-link:hover { color: #5568d3; }
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
-        .modal-content { background: white; margin: 5% auto; padding: 0; border-radius: 8px; width: 95%; max-width: 600px; max-height: 85vh; display: flex; flex-direction: column; }
+        .modal-content { background: white; margin: 5% auto; padding: 0; border-radius: 8px; width: 95%; max-width: 1400px; max-height: 85vh; display: flex; flex-direction: column; }
         .modal-header { padding: 20px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center; }
         .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
         .close { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
@@ -154,6 +154,7 @@
 
     <script>
         let ws;
+        let wsStats;
         let currentPage = 1;
         let pageSize = 20;
         let totalRecords = 0;
@@ -442,17 +443,17 @@
                         <h3>Key 使用</h3>
                         <div class="token-summary-box">
                             <div class="token-item">
-                                <div class="token-label">输入 Key</div>
+                                <div class="token-label">输入 Token</div>
                                 <div class="token-value">${record.input_tokens || 0}</div>
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
-                                <div class="token-label">输出 Key</div>
+                                <div class="token-label">输出 Token</div>
                                 <div class="token-value">${record.output_tokens || 0}</div>
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
-                                <div class="token-label">总 Key</div>
+                                <div class="token-label">总 Token</div>
                                 <div class="token-value">${record.total_tokens || 0}</div>
                             </div>
                             <div class="token-divider"></div>
@@ -654,6 +655,35 @@
             };
         }
 
+        function connectStatsWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            wsStats = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+
+            wsStats.onopen = () => {
+                console.log('Stats WebSocket connected');
+            };
+
+            wsStats.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.total_input_tokens !== undefined) {
+                    // 全量更新
+                    loadStats();
+                } else if (data.input_tokens !== undefined) {
+                    // 新记录增量更新，直接刷新统计
+                    loadStats();
+                }
+            };
+
+            wsStats.onerror = (error) => {
+                console.error('Stats WebSocket error:', error);
+            };
+
+            wsStats.onclose = () => {
+                console.log('Stats WebSocket disconnected, reconnecting...');
+                setTimeout(connectStatsWebSocket, 3000);
+            };
+        }
+
         // 将新记录插入到表格顶部
         function prependRecord(record) {
             const recordsTable = document.getElementById('recordsTable');
@@ -726,6 +756,7 @@
         loadStats();
         loadHistory();
         connectWebSocket();
+        connectStatsWebSocket();
     </script>
 </body>
 </html>

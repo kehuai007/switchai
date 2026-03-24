@@ -105,6 +105,12 @@ func RegisterRoutes(r *gin.Engine) {
 // authMiddleware 认证中间件，检查登录 cookie
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// skip 模式下跳过认证
+		if config.IsSkipAuth() {
+			c.Next()
+			return
+		}
+
 		cookieToken, err := c.Cookie(loginCookie)
 		if err != nil || cookieToken == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录，请先登录"})
@@ -406,8 +412,8 @@ func handleHistoryWebSocket(c *gin.Context) {
 	history.AddClient(conn)
 	log.Println("New history WebSocket client connected")
 
-	// 发送最近 10 条历史记录
-	records, total := history.GetRecords(1, 10)
+	// 发送最近 20 条历史记录
+	records, total := history.GetRecordsSummary(1, 20)
 	if err := conn.WriteJSON(gin.H{"type": "history", "records": records, "total": total}); err != nil {
 		log.Printf("Error sending initial history: %v", err)
 	}
@@ -514,7 +520,7 @@ func getHistory(c *gin.Context) {
 		pageSize = 20
 	}
 
-	records, total := history.GetRecords(page, pageSize)
+	records, total := history.GetRecordsSummary(page, pageSize)
 	c.JSON(http.StatusOK, gin.H{
 		"records":   records,
 		"total":     total,
