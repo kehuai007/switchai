@@ -1,14 +1,18 @@
 package web
 
 import (
+	"bytes"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"switchai/config"
 	"switchai/history"
 	"switchai/stats"
@@ -81,6 +85,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.PUT("/providers/:id", updateProvider)
 		api.DELETE("/providers/:id", deleteProvider)
 		api.POST("/providers/:id/activate", activateProvider)
+		api.POST("/providers/:id/test", testProvider)
 
 		// 统计信息
 		api.GET("/stats", getStats)
@@ -491,6 +496,117 @@ func activateProvider(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Provider activated"})
+}
+
+// testProvider 测试提供商连接，发送 "hi" 消息
+func testProvider(c *gin.Context) {
+	id := c.Param("id")
+	cfg := config.GetConfig()
+
+	provider := cfg.GetProviderByID(id)
+	if provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Provider not found"})
+		return
+	}
+
+	// 根据提供商格式构建测试请求
+	var reqBody []byte
+	var targetURL string
+	var err error
+
+	if provider.IsOpenAIFormat {
+		// OpenAI 格式
+		openAIReq := map[string]interface{}{
+			"model": provider.Model,
+			"messages": []map[string]interface{}{
+				{"role": "user", "content": "hi"},
+			},
+			"max_tokens": 10,
+		}
+		reqBody, _ = json.Marshal(openAIReq)
+		baseURL := strings.TrimSuffix(provider.BaseURL, "/")
+		if strings.HasSuffix(baseURL, "/v1") {
+			targetURL = baseURL + "/chat/completions"
+		} else {
+			targetURL = baseURL + "/v1/chat/completions"
+		}
+	} else {
+		// Claude 格式
+		claudeReq := map[string]interface{}{
+			"model": provider.Model,
+			"messages": []map[string]interface{}{
+				{"role": "user", "content": "hi"},
+			},
+			"max_tokens": 10,
+		}
+		reqBody, _ = json.Marshal(claudeReq)
+		targetURL = strings.TrimSuffix(provider.BaseURL, "/") + "/v1/messages"
+	}
+
+	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	if !provider.IsOpenAIFormat {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Connection failed: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// 解析响应，提取 AI 的回复内容
+		var aiReply string
+		if provider.IsOpenAIFormat {
+			// OpenAI 格式响应
+			var openaiResp struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal(respBody, &openaiResp) == nil && len(openaiResp.Choices) > 0 {
+				aiReply = openaiResp.Choices[0].Message.Content
+			}
+		} else {
+			// Claude 格式响应
+			var claudeResp struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if json.Unmarshal(respBody, &claudeResp) == nil && len(claudeResp.Content) > 0 {
+				aiReply = claudeResp.Content[0].Text
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":  true,
+			"status":   resp.StatusCode,
+			"message":  "Connection successful",
+			"response": string(respBody),
+			"aiReply":  aiReply,
+		})
+	} else {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"status":  resp.StatusCode,
+			"message": "Connection failed",
+			"response": string(respBody),
+		})
+	}
 }
 
 func getStats(c *gin.Context) {

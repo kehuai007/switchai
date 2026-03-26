@@ -303,6 +303,19 @@ func (c *Config) GetActiveProvider() *Provider {
 	return nil
 }
 
+// GetProviderByID 根据ID获取提供商
+func (c *Config) GetProviderByID(id string) *Provider {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for i := range c.Providers {
+		if c.Providers[i].ID == id {
+			return &c.Providers[i]
+		}
+	}
+	return nil
+}
+
 func (c *Config) AddProvider(p Provider) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

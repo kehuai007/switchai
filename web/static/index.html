@@ -245,7 +245,9 @@
                     </label>
                     <p style="font-size: 12px; color: #666; margin-top: 5px;">勾选此项表示该厂商使用 OpenAI 兼容的 API 格式</p>
                 </div>
+                <div id="testResult" class="hidden" style="margin-bottom: 15px; padding: 10px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button type="button" class="btn-warning" onclick="testProvider()">测试连接</button>
                     <button type="button" class="btn-danger" onclick="hideEditModal()">取消</button>
                     <button type="submit" class="btn-success">保存</button>
                 </div>
@@ -806,6 +808,7 @@
         function hideEditModal() {
             document.getElementById('editModal').classList.remove('show');
             document.getElementById('editForm').reset();
+            document.getElementById('testResult').classList.add('hidden');
         }
 
         function editProvider(id) {
@@ -820,6 +823,69 @@
             document.getElementById('editIsOpenAIFormat').checked = provider.is_openai_format || false;
 
             showEditModal();
+        }
+
+        async function testProvider() {
+            const id = document.getElementById('editId').value;
+            const name = document.getElementById('editName').value;
+            const baseUrl = document.getElementById('editBaseUrl').value;
+            const apiKey = document.getElementById('editApiKey').value;
+            const model = document.getElementById('editModel').value;
+            const isOpenAIFormat = document.getElementById('editIsOpenAIFormat').checked;
+
+            if (!baseUrl || !apiKey || !model) {
+                showTestResult('请填写完整的配置信息', false);
+                return;
+            }
+
+            showTestResult('正在测试连接...', 'info');
+
+            try {
+                const res = await fetch(`/api/providers/${id}/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    let msg = `✓ 连接成功！状态码: ${data.status}`;
+                    // 尝试解析并显示 AI 回复
+                    if (data.aiReply) {
+                        msg += `\n\nAI 回复: ${data.aiReply}`;
+                    } else if (data.response) {
+                        // 如果没有解析出 aiReply，显示原始响应
+                        try {
+                            const respJson = JSON.parse(data.response);
+                            msg += `\n\n原始响应:\n${JSON.stringify(respJson, null, 2)}`;
+                        } catch {
+                            msg += `\n\n原始响应: ${data.response}`;
+                        }
+                    }
+                    showTestResult(msg, true, data.aiReply);
+                } else {
+                    showTestResult(`✗ 连接失败 (${data.status}): ${data.response || data.error}`, false);
+                }
+            } catch (err) {
+                showTestResult(`✗ 连接错误: ${err.message}`, false);
+            }
+        }
+
+        function showTestResult(message, success, aiReply) {
+            const el = document.getElementById('testResult');
+            el.classList.remove('hidden');
+            if (success === true) {
+                el.style.background = '#c6f6d5';
+                el.style.color = '#22543d';
+                el.innerHTML = message.replace(/\n/g, '<br>');
+            } else if (success === false) {
+                el.style.background = '#fed7d7';
+                el.style.color = '#742a2a';
+                el.innerHTML = message.replace(/\n/g, '<br>');
+            } else {
+                el.style.background = '#feebc8';
+                el.style.color = '#744210';
+                el.textContent = message;
+            }
         }
 
         document.getElementById('addForm').addEventListener('submit', async (e) => {
