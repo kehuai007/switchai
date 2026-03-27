@@ -89,6 +89,7 @@ func RegisterRoutes(r *gin.Engine) {
 
 		// 统计信息
 		api.GET("/stats", getStats)
+		api.GET("/stats/daily", getDailyStats)
 		api.POST("/stats/reset", resetStats)
 		api.POST("/stats/reset/:provider_id", resetProviderStats)
 
@@ -437,8 +438,14 @@ func handleHistoryWebSocket(c *gin.Context) {
 
 func getProviders(c *gin.Context) {
 	cfg := config.GetConfig()
+	// 不返回实际的 API Key，保护密钥安全
+	providers := make([]config.Provider, len(cfg.Providers))
+	for i, p := range cfg.Providers {
+		providers[i] = p
+		providers[i].APIKey = "" // 返回空，避免泄露
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"providers":       cfg.Providers,
+		"providers":       providers,
 		"active_provider": cfg.ActiveProvider,
 	})
 }
@@ -470,6 +477,14 @@ func updateProvider(c *gin.Context) {
 	}
 
 	provider.ID = id
+	// 如果 api_key 为空，保留原值
+	if provider.APIKey == "" {
+		oldProvider := config.GetConfig().GetProviderByID(id)
+		if oldProvider != nil {
+			provider.APIKey = oldProvider.APIKey
+		}
+	}
+
 	if err := config.GetConfig().UpdateProvider(id, provider); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -612,6 +627,16 @@ func testProvider(c *gin.Context) {
 func getStats(c *gin.Context) {
 	summary := stats.GetStats().GetSummary()
 	c.JSON(http.StatusOK, summary)
+}
+
+func getDailyStats(c *gin.Context) {
+	s := stats.GetStats()
+	today := s.GetTodaySummary()
+	dailyHistory := s.GetDailyHistory()
+	c.JSON(http.StatusOK, gin.H{
+		"today":        today,
+		"daily_history": dailyHistory,
+	})
 }
 
 func resetStats(c *gin.Context) {

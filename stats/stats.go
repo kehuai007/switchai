@@ -224,6 +224,14 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		return
 	}
 
+	// Delete records older than 7 days
+	sevenDaysAgo := time.Now().AddDate(0, 0, -7).UnixNano()
+	_, err = tx.Exec(`DELETE FROM usage_records WHERE timestamp < ?`, sevenDaysAgo)
+	if err != nil {
+		logger.Error("Failed to delete old usage records: %v", err)
+		return
+	}
+
 	// Upsert provider_stats
 	_, err = tx.Exec(`
 		INSERT INTO provider_stats (provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count)
@@ -415,6 +423,148 @@ func (s *Stats) GetSummary() map[string]interface{} {
 		"key_stats":           keyStatsArray,
 		"recent_records":       recentRecords,
 	}
+}
+
+// GetTodaySummary 获取今日统计
+func (s *Stats) GetTodaySummary() map[string]interface{} {
+	if db == nil {
+		return emptySummary()
+	}
+
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	startNano := startOfDay.UnixNano()
+
+	// Get provider stats for today
+	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count FROM provider_stats`)
+	if err != nil {
+		logger.Error("Failed to get provider stats: %v", err)
+		return emptySummary()
+	}
+	defer providerRows.Close()
+
+	var providerStatsArray []*ProviderStats
+	for providerRows.Next() {
+		var ps ProviderStats
+		if err := providerRows.Scan(&ps.ProviderID, &ps.ProviderName, &ps.InputTokens, &ps.OutputTokens, &ps.TotalTokens, &ps.TotalCost, &ps.RequestCount); err != nil {
+			continue
+		}
+		providerStatsArray = append(providerStatsArray, &ps)
+	}
+	sort.Slice(providerStatsArray, func(i, j int) bool {
+		return providerStatsArray[i].ProviderName < providerStatsArray[j].ProviderName
+	})
+
+	// Get key stats for today
+	keyRows, err := db.Query(`SELECT key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count FROM key_stats`)
+	if err != nil {
+		logger.Error("Failed to get key stats: %v", err)
+		return emptySummary()
+	}
+	defer keyRows.Close()
+
+	var keyStatsArray []*KeyStats
+	for keyRows.Next() {
+		var ks KeyStats
+		var ipsJSON string
+		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount); err != nil {
+			continue
+		}
+		json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
+		keyStatsArray = append(keyStatsArray, &ks)
+	}
+	sort.Slice(keyStatsArray, func(i, j int) bool {
+		return keyStatsArray[i].KeyID < keyStatsArray[j].KeyID
+	})
+
+	// Get totals for today only
+	var totalInput, totalOutput, totalRequestCount int
+	var totalCost float64
+	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0) FROM usage_records WHERE timestamp >= ?`, startNano).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
+	if err != nil {
+		logger.Error("Failed to get today totals from usage_records: %v", err)
+	}
+
+	// Get recent records for today (last 10)
+	recordRows, err := db.Query(`SELECT provider_id, provider_name, model, input_tokens, output_tokens, total_tokens, cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name FROM usage_records WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT 10`, startNano)
+	if err != nil {
+		logger.Error("Failed to get recent records: %v", err)
+		return emptySummary()
+	}
+	defer recordRows.Close()
+
+	var recentRecords []UsageRecord
+	for recordRows.Next() {
+		var r UsageRecord
+		var timestamp int64
+		if err := recordRows.Scan(&r.ProviderID, &r.ProviderName, &r.Model, &r.InputTokens, &r.OutputTokens, &r.TotalTokens, &r.Cost, &r.Duration, &r.TimeToFirst, &timestamp, &r.Group, &r.Type); err != nil {
+			continue
+		}
+		r.Timestamp = time.Unix(0, timestamp)
+		recentRecords = append(recentRecords, r)
+	}
+
+	return map[string]interface{}{
+		"total_input_tokens":   totalInput,
+		"total_output_tokens":  totalOutput,
+		"total_tokens":        totalInput + totalOutput,
+		"total_cost":          totalCost,
+		"total_request_count":  totalRequestCount,
+		"provider_stats":       providerStatsArray,
+		"key_stats":           keyStatsArray,
+		"recent_records":       recentRecords,
+	}
+}
+
+// DailyStats 每日统计结构
+type DailyStats struct {
+	Date           string  `json:"date"`
+	InputTokens    int     `json:"input_tokens"`
+	OutputTokens   int     `json:"output_tokens"`
+	TotalTokens    int     `json:"total_tokens"`
+	TotalCost      float64 `json:"total_cost"`
+	RequestCount   int     `json:"request_count"`
+}
+
+// GetDailyHistory 获取最近7天每日统计
+func (s *Stats) GetDailyHistory() []DailyStats {
+	if db == nil {
+		return []DailyStats{}
+	}
+
+	var result []DailyStats
+	now := time.Now()
+
+	for i := 0; i < 7; i++ {
+		date := now.AddDate(0, 0, -i)
+		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+		endOfDay := startOfDay.AddDate(0, 0, 1)
+		startNano := startOfDay.UnixNano()
+		endNano := endOfDay.UnixNano()
+
+		var inputTokens, outputTokens, requestCount int
+		var totalCost float64
+
+		err := db.QueryRow(`
+			SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0)
+			FROM usage_records WHERE timestamp >= ? AND timestamp < ?`,
+			startNano, endNano).Scan(&inputTokens, &outputTokens, &requestCount, &totalCost)
+
+		if err != nil {
+			logger.Error("Failed to get daily stats for %s: %v", startOfDay.Format("2006-01-02"), err)
+		}
+
+		result = append(result, DailyStats{
+			Date:         startOfDay.Format("2006-01-02"),
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+			TotalCost:    totalCost,
+			RequestCount: requestCount,
+		})
+	}
+
+	return result
 }
 
 func emptySummary() map[string]interface{} {

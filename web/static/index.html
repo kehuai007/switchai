@@ -14,6 +14,19 @@
         .stat-item { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; }
         .stat-label { font-size: 14px; opacity: 0.9; margin-bottom: 5px; }
         .stat-value { font-size: 28px; font-weight: bold; }
+        .today-card .stat-item { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
+        .history-toggle { cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 10px 0; }
+        .history-toggle:hover { opacity: 0.8; }
+        .history-toggle .arrow { transition: transform 0.3s; }
+        .history-toggle.expanded .arrow { transform: rotate(180deg); }
+        .history-content { display: none; padding: 10px 0; }
+        .history-content.show { display: block; }
+        .history-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+        .history-item { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; text-align: center; }
+        .history-item.today { background: #e6fffa; border-color: #38ef7d; }
+        .history-date { font-size: 12px; color: #666; margin-bottom: 5px; }
+        .history-value { font-size: 18px; font-weight: bold; color: #333; }
+        .history-label { font-size: 11px; color: #888; }
         .provider-list { display: grid; gap: 15px; }
         .provider-item { border: 2px solid #e0e0e0; border-radius: 8px; padding: 15px; transition: all 0.3s; display: flex; align-items: center; gap: 15px; flex-wrap: nowrap; overflow: hidden; }
         .provider-item.active { border-color: #667eea; background: #f0f4ff; }
@@ -163,6 +176,42 @@
             </div>
         </div>
 
+        <div class="card today-card">
+            <h2 style="margin-bottom: 15px;">今日统计</h2>
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-label">今日输入 Token</div>
+                    <div class="stat-value" id="todayInput">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">今日输出 Token</div>
+                    <div class="stat-value" id="todayOutput">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">今日总计 Token</div>
+                    <div class="stat-value" id="todayTokens">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">今日花费</div>
+                    <div class="stat-value" id="todayCost">$0.00</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">今日请求数</div>
+                    <div class="stat-value" id="todayRequestCount">0</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="history-toggle" onclick="toggleHistory()">
+                <span>近7日统计</span>
+                <span class="arrow">▼</span>
+            </div>
+            <div class="history-content" id="historyContent">
+                <div class="history-grid" id="historyGrid"></div>
+            </div>
+        </div>
+
         <div class="card">
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px;">
                 <h2 style="margin: 0;">API 服务器密钥</h2>
@@ -232,7 +281,7 @@
                 </div>
                 <div class="form-group">
                     <label>API Key</label>
-                    <input type="text" name="api_key" id="editApiKey" required placeholder="sk-ant-...">
+                    <input type="text" name="api_key" id="editApiKey" placeholder="留空则保持不变，输入新值则覆盖">
                 </div>
                 <div class="form-group">
                     <label>模型名称</label>
@@ -325,6 +374,7 @@
                     loadKeyStats();
                     loadProviders();
                     loadStats();
+                    loadDailyStats();
                     connectWebSocket();
                 }
             } catch (err) {
@@ -415,6 +465,7 @@
                     loadKeyStats();
                     loadProviders();
                     loadStats();
+                    loadDailyStats();
                     connectWebSocket();
                 } else {
                     const data = await res.json();
@@ -484,6 +535,7 @@
                     loadKeyStats();
                     loadProviders();
                     loadStats();
+                    loadDailyStats();
                     connectWebSocket();
                 } else {
                     const data = await res.json();
@@ -716,6 +768,98 @@
             document.getElementById('totalRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
         }
 
+        function updateTodayStats(data) {
+            document.getElementById('todayInput').textContent = data.total_input_tokens.toLocaleString();
+            document.getElementById('todayOutput').textContent = data.total_output_tokens.toLocaleString();
+            document.getElementById('todayTokens').textContent = data.total_tokens.toLocaleString();
+            document.getElementById('todayCost').textContent = '$' + (data.total_cost || 0).toFixed(4);
+            document.getElementById('todayRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
+        }
+
+        function renderDailyHistory(dailyHistory) {
+            const grid = document.getElementById('historyGrid');
+            const today = new Date().toISOString().split('T')[0];
+
+            grid.innerHTML = dailyHistory.map(day => `
+                <div class="history-item ${day.date === today ? 'today' : ''}">
+                    <div class="history-date">${day.date === today ? '今日' : day.date}</div>
+                    <div class="history-value">${day.total_tokens.toLocaleString()}</div>
+                    <div class="history-label">Token</div>
+                    <div class="history-value" style="font-size: 14px; color: #38ef7d;">$${day.total_cost.toFixed(4)}</div>
+                    <div class="history-label">花费 · ${day.request_count} 请求</div>
+                </div>
+            `).join('');
+        }
+
+        async function loadDailyStats() {
+            try {
+                const res = await fetch('/api/stats/daily');
+                if (res.status === 401) {
+                    showLoginPage();
+                    return;
+                }
+                const data = await res.json();
+                if (data.today) {
+                    updateTodayStats(data.today);
+                }
+                if (data.daily_history) {
+                    renderDailyHistory(data.daily_history);
+                }
+            } catch (err) {
+                console.error('加载每日统计失败:', err);
+            }
+        }
+
+        function toggleHistory() {
+            const toggle = document.querySelector('.history-toggle');
+            const content = document.getElementById('historyContent');
+            toggle.classList.toggle('expanded');
+            content.classList.toggle('show');
+        }
+
+        let statsWsConnected = false;
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                statsWsConnected = true;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('WebSocket message received:', data);
+                if (data.total_input_tokens !== undefined) {
+                    updateStats(data);
+                    // 更新密钥统计
+                    if (data.key_stats) {
+                        keyStats = {};
+                        data.key_stats.forEach(stat => {
+                            keyStats[stat.key_id] = stat;
+                        });
+                        renderServerKeys();
+                    }
+                } else if (data.input_tokens !== undefined) {
+                    console.log('New token usage received, refreshing stats...');
+                    loadStats();
+                    loadDailyStats();
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                statsWsConnected = false;
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected, reconnecting...');
+                statsWsConnected = false;
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
         async function loadProviders() {
             const res = await fetch('/api/providers');
             if (res.status === 401) {
@@ -759,7 +903,6 @@
                                 ${p.id === activeProvider ? '<span class="badge badge-active">当前使用</span>' : '<span class="badge badge-inactive">未激活</span>'}
                             </h4>
                             <p><span class="provider-url">${p.base_url}</span></p>
-                            <p>Key: <span class="provider-key-masked" onclick="toggleProviderKeyVisibility(this, '${p.api_key}')" title="点击显示密钥">${'•'.repeat(p.api_key.length > 24 ? 24 : p.api_key.length)}${p.api_key.length > 24 ? '...' : ''}</span></p>
                         </div>
                     </div>
                     <div class="provider-item-stats">
@@ -818,7 +961,7 @@
             document.getElementById('editId').value = provider.id;
             document.getElementById('editName').value = provider.name;
             document.getElementById('editBaseUrl').value = provider.base_url;
-            document.getElementById('editApiKey').value = provider.api_key;
+            document.getElementById('editApiKey').value = ''; // 不返回API Key，保持为空
             document.getElementById('editModel').value = provider.model;
             document.getElementById('editIsOpenAIFormat').checked = provider.is_openai_format || false;
 
