@@ -119,6 +119,18 @@ func proxyHandler(c *gin.Context) {
 		return
 	}
 
+	// 检查密钥限额
+	serverKey := config.GetConfig().GetServerKeyByID(keyID)
+	if serverKey != nil {
+		allowed, reason := stats.CheckKeyLimit(keyID,
+			serverKey.DailyReqLimit, serverKey.TotalReqLimit,
+			serverKey.DailyCostLimit, serverKey.TotalCostLimit)
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": reason})
+			return
+		}
+	}
+
 	provider := config.GetConfig().GetActiveProvider()
 	if provider == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{

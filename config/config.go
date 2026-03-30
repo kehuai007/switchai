@@ -25,12 +25,16 @@ type Provider struct {
 }
 
 type ServerKey struct {
-	ID        string `json:"id"`        // 密钥ID
-	Key       string `json:"key"`        // 密钥值 sk-xxxx
-	Remark    string `json:"remark"`     // 备注
-	IsEnabled bool   `json:"is_enabled"` // 是否启用
-	CreatedAt string `json:"created_at"` // 创建时间
-	Order     int    `json:"order"`      // 排序序号
+	ID               string  `json:"id"`        // 密钥ID
+	Key              string  `json:"key"`        // 密钥值 sk-xxxx
+	Remark           string  `json:"remark"`     // 备注
+	IsEnabled        bool    `json:"is_enabled"` // 是否启用
+	CreatedAt        string  `json:"created_at"` // 创建时间
+	Order            int     `json:"order"`      // 排序序号
+	DailyReqLimit    int     `json:"daily_req_limit"`    // 每日请求次数限额 (0=不限)
+	TotalReqLimit    int     `json:"total_req_limit"`    // 总请求次数限额 (0=不限)
+	DailyCostLimit   float64 `json:"daily_cost_limit"`   // 每日花费限额 (0=不限)
+	TotalCostLimit   float64 `json:"total_cost_limit"`   // 总花费限额 (0=不限)
 }
 
 type Config struct {
@@ -112,7 +116,11 @@ func initDB() error {
 		remark TEXT,
 		is_enabled INTEGER,
 		created_at TEXT,
-		order_num INTEGER
+		order_num INTEGER,
+		daily_req_limit INTEGER DEFAULT 0,
+		total_req_limit INTEGER DEFAULT 0,
+		daily_cost_limit REAL DEFAULT 0,
+		total_cost_limit REAL DEFAULT 0
 	);
 	`
 	_, err := db.Exec(schema)
@@ -182,7 +190,7 @@ func (c *Config) Load() error {
 	}
 
 	// 加载 server_keys
-	rows, err = db.Query("SELECT id, key, remark, is_enabled, created_at, order_num FROM server_keys ORDER BY order_num")
+	rows, err = db.Query("SELECT id, key, remark, is_enabled, created_at, order_num, COALESCE(daily_req_limit, 0), COALESCE(total_req_limit, 0), COALESCE(daily_cost_limit, 0), COALESCE(total_cost_limit, 0) FROM server_keys ORDER BY order_num")
 	if err != nil {
 		return err
 	}
@@ -192,7 +200,7 @@ func (c *Config) Load() error {
 	for rows.Next() {
 		var k ServerKey
 		var isEnabled int
-		if err := rows.Scan(&k.ID, &k.Key, &k.Remark, &isEnabled, &k.CreatedAt, &k.Order); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Remark, &isEnabled, &k.CreatedAt, &k.Order, &k.DailyReqLimit, &k.TotalReqLimit, &k.DailyCostLimit, &k.TotalCostLimit); err != nil {
 			return err
 		}
 		k.IsEnabled = isEnabled == 1
@@ -271,8 +279,8 @@ func (c *Config) save() error {
 		if k.IsEnabled {
 			isEnabled = 1
 		}
-		_, err = db.Exec("INSERT INTO server_keys (id, key, remark, is_enabled, created_at, order_num) VALUES (?, ?, ?, ?, ?, ?)",
-			k.ID, k.Key, k.Remark, isEnabled, k.CreatedAt, k.Order)
+		_, err = db.Exec("INSERT INTO server_keys (id, key, remark, is_enabled, created_at, order_num, daily_req_limit, total_req_limit, daily_cost_limit, total_cost_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			k.ID, k.Key, k.Remark, isEnabled, k.CreatedAt, k.Order, k.DailyReqLimit, k.TotalReqLimit, k.DailyCostLimit, k.TotalCostLimit)
 		if err != nil {
 			return err
 		}
@@ -465,6 +473,19 @@ func (c *Config) ValidateServerKey(keyStr string) (string, bool) {
 	return "", false
 }
 
+// GetServerKeyByID 获取服务器密钥（包含限额信息）
+func (c *Config) GetServerKeyByID(id string) *ServerKey {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for i := range c.ServerKeys {
+		if c.ServerKeys[i].ID == id {
+			return &c.ServerKeys[i]
+		}
+	}
+	return nil
+}
+
 // AddServerKey 添加服务器密钥
 func (c *Config) AddServerKey(key ServerKey) error {
 	c.mu.Lock()
@@ -527,19 +548,6 @@ func (c *Config) DeleteServerKey(id string) error {
 		}
 	}
 
-	return nil
-}
-
-// GetServerKeyByID 根据ID获取密钥
-func (c *Config) GetServerKeyByID(id string) *ServerKey {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	for i := range c.ServerKeys {
-		if c.ServerKeys[i].ID == id {
-			return &c.ServerKeys[i]
-		}
-	}
 	return nil
 }
 
@@ -607,6 +615,16 @@ func (c *Config) ClearSessionToken() error {
 
 	c.SessionToken = ""
 	c.SessionExpiry = 0
+	return c.save()
+}
+
+// ResetTOTP 重置 TOTP 数据（清除密钥和启用状态，但保留其他配置）
+func (c *Config) ResetTOTP() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.TOTPSecret = ""
+	c.TOTPEnabled = false
 	return c.save()
 }
 

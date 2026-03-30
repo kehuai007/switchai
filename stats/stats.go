@@ -3,6 +3,7 @@ package stats
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -133,6 +134,16 @@ func initDB() error {
 		ip_addresses TEXT DEFAULT '[]',
 		request_count INTEGER DEFAULT 0
 	);
+
+	CREATE TABLE IF NOT EXISTS key_daily_stats (
+		key_id TEXT NOT NULL,
+		date TEXT NOT NULL,
+		request_count INTEGER DEFAULT 0,
+		total_cost REAL DEFAULT 0,
+		PRIMARY KEY (key_id, date)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_key_daily ON key_daily_stats(key_id, date);
 
 	CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp DESC);
 	CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_records(provider_id);
@@ -292,6 +303,20 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 			keyID, inputTokens, outputTokens, inputTokens+outputTokens, cost, string(ipsJSON))
 		if err != nil {
 			logger.Error("Failed to upsert key stats: %v", err)
+			return
+		}
+
+		// Upsert key_daily_stats
+		today := time.Now().Format("2006-01-02")
+		_, err = tx.Exec(`
+			INSERT INTO key_daily_stats (key_id, date, request_count, total_cost)
+			VALUES (?, ?, 1, ?)
+			ON CONFLICT(key_id, date) DO UPDATE SET
+				request_count = request_count + 1,
+				total_cost = total_cost + excluded.total_cost`,
+			keyID, today, cost)
+		if err != nil {
+			logger.Error("Failed to upsert key daily stats: %v", err)
 			return
 		}
 	}
@@ -728,4 +753,67 @@ func ResetKeyStats(keyID string) {
 	}
 
 	logger.Info("✅ 密钥 %s 的统计数据已重置", keyID)
+}
+
+// KeyUsage holds current usage for a key
+type KeyUsage struct {
+	DailyReqCount   int
+	DailyCost       float64
+	TotalReqCount   int
+	TotalCost       float64
+}
+
+// GetKeyUsage gets the current usage for a key (daily and total)
+func GetKeyUsage(keyID string) *KeyUsage {
+	if db == nil {
+		return nil
+	}
+
+	usage := &KeyUsage{}
+
+	// Get daily usage
+	today := time.Now().Format("2006-01-02")
+	err := db.QueryRow(`SELECT COALESCE(request_count, 0), COALESCE(total_cost, 0) FROM key_daily_stats WHERE key_id = ? AND date = ?`, keyID, today).Scan(&usage.DailyReqCount, &usage.DailyCost)
+	if err != nil && err != sql.ErrNoRows {
+		logger.Error("Failed to get daily key usage: %v", err)
+	}
+
+	// Get total usage
+	err = db.QueryRow(`SELECT COALESCE(request_count, 0), COALESCE(total_cost, 0) FROM key_stats WHERE key_id = ?`, keyID).Scan(&usage.TotalReqCount, &usage.TotalCost)
+	if err != nil && err != sql.ErrNoRows {
+		logger.Error("Failed to get total key usage: %v", err)
+	}
+
+	return usage
+}
+
+// CheckKeyLimit checks if a request is allowed based on key limits
+// Returns (allowed bool, reason string)
+func CheckKeyLimit(keyID string, keyDailyReqLimit, keyTotalReqLimit int, keyDailyCostLimit, keyTotalCostLimit float64) (bool, string) {
+	if keyDailyReqLimit <= 0 && keyTotalReqLimit <= 0 && keyDailyCostLimit <= 0 && keyTotalCostLimit <= 0 {
+		return true, ""
+	}
+
+	usage := GetKeyUsage(keyID)
+	if usage == nil {
+		return true, ""
+	}
+
+	if keyDailyReqLimit > 0 && usage.DailyReqCount >= keyDailyReqLimit {
+		return false, fmt.Sprintf("每日请求次数限额已用尽 (%d/%d)", usage.DailyReqCount, keyDailyReqLimit)
+	}
+
+	if keyTotalReqLimit > 0 && usage.TotalReqCount >= keyTotalReqLimit {
+		return false, fmt.Sprintf("总请求次数限额已用尽 (%d/%d)", usage.TotalReqCount, keyTotalReqLimit)
+	}
+
+	if keyDailyCostLimit > 0 && usage.DailyCost >= keyDailyCostLimit {
+		return false, fmt.Sprintf("每日花费限额已用尽 ($%.4f/$%.4f)", usage.DailyCost, keyDailyCostLimit)
+	}
+
+	if keyTotalCostLimit > 0 && usage.TotalCost >= keyTotalCostLimit {
+		return false, fmt.Sprintf("总花费限额已用尽 ($%.4f/$%.4f)", usage.TotalCost, keyTotalCostLimit)
+	}
+
+	return true, ""
 }

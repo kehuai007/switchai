@@ -29,11 +29,44 @@ func main() {
 	install := flag.Bool("install", false, "Install as system service")
 	uninstall := flag.Bool("uninstall", false, "Uninstall system service")
 	skipAuth := flag.Bool("skip", false, "Skip authentication (for internal network deployment)")
+	reset2FA := flag.Bool("reset", false, "Reset 2FA data and redirect to first-time binding")
 	flag.Parse()
 
 	// Set skip auth mode in config
 	if *skipAuth {
 		config.SetSkipAuth(true)
+	}
+
+	// Initialize data directory first for reset operation
+	if err := appdata.Init(); err != nil {
+		log.Fatalf("Failed to initialize data directory: %v", err)
+	}
+
+	// 初始化日志系统
+	if err := logger.Init(); err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+
+	// Initialize config first for reset operation
+	if err := config.Init(); err != nil {
+		logger.Error("Failed to initialize config: %v", err)
+		log.Fatalf("Failed to initialize config: %v", err)
+	}
+
+	// Handle 2FA reset
+	if *reset2FA {
+		cfg := config.GetConfig()
+		if err := cfg.ResetTOTP(); err != nil {
+			logger.Error("Failed to reset 2FA: %v", err)
+			fmt.Fprintf(os.Stderr, "Failed to reset 2FA: %v\n", err)
+			os.Exit(1)
+		}
+		logger.Info("2FA has been reset successfully")
+		fmt.Println("✅ 2FA 数据已重置，访问页面将跳转到首次绑定")
+		// Also clear session to force re-login
+		cfg.ClearSessionToken()
+		os.Exit(0)
+		return
 	}
 
 	// Handle service installation/uninstallation
@@ -58,22 +91,6 @@ func main() {
 }
 
 func startServer(port string) {
-	// 初始化数据目录（使用进程名作为目录名）
-	if err := appdata.Init(); err != nil {
-		log.Fatalf("Failed to initialize data directory: %v", err)
-	}
-
-	// 初始化日志系统
-	if err := logger.Init(); err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
-	}
-
-	// 初始化配置
-	if err := config.Init(); err != nil {
-		logger.Error("Failed to initialize config: %v", err)
-		log.Fatalf("Failed to initialize config: %v", err)
-	}
-
 	// 初始化统计
 	stats.Init()
 

@@ -344,6 +344,27 @@
                         <span>启用此密钥</span>
                     </label>
                 </div>
+                <div style="border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px;">
+                    <h4 style="margin-bottom: 10px; color: #4a5568;">限额设置 (0 = 不限)</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="form-group">
+                            <label>每日请求次数限额</label>
+                            <input type="number" name="daily_req_limit" id="editKeyDailyReqLimit" placeholder="0=不限" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label>总请求次数限额</label>
+                            <input type="number" name="total_req_limit" id="editKeyTotalReqLimit" placeholder="0=不限" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label>每日花费限额 ($)</label>
+                            <input type="number" name="daily_cost_limit" id="editKeyDailyCostLimit" placeholder="0=不限" min="0" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>总花费限额 ($)</label>
+                            <input type="number" name="total_cost_limit" id="editKeyTotalCostLimit" placeholder="0=不限" min="0" step="0.01">
+                        </div>
+                    </div>
+                </div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
                     <button type="button" class="btn-danger" onclick="hideEditKeyModal()">取消</button>
                     <button type="submit" class="btn-success">保存</button>
@@ -595,6 +616,23 @@
                 const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost: 0, request_count: 0, ip_addresses: [] };
                 const ips = stat.ip_addresses ? stat.ip_addresses.join(', ') : '无';
                 const costDisplay = stat.total_cost > 0 ? '$' + stat.total_cost.toFixed(4) : '$0';
+
+                // 构建限额显示
+                const limits = [];
+                if (k.daily_req_limit > 0) {
+                    limits.push(`<span style="color: #ed8936;">日请求 ${stat.request_count || 0}/${k.daily_req_limit}</span>`);
+                }
+                if (k.total_req_limit > 0) {
+                    limits.push(`<span style="color: #ed8936;">总请求 ${stat.request_count || 0}/${k.total_req_limit}</span>`);
+                }
+                if (k.daily_cost_limit > 0) {
+                    const dailyCost = stat.total_cost || 0;
+                    limits.push(`<span style="color: #ed8936;">日花费 $${dailyCost.toFixed(4)}/$${k.daily_cost_limit.toFixed(2)}</span>`);
+                }
+                if (k.total_cost_limit > 0) {
+                    limits.push(`<span style="color: #ed8936;">总花费 $${(stat.total_cost || 0).toFixed(4)}/$${k.total_cost_limit.toFixed(2)}</span>`);
+                }
+
                 return `
                     <div class="key-item ${k.is_enabled ? '' : 'disabled'}">
                         <div class="key-item-header">
@@ -605,6 +643,7 @@
                                     ${k.is_enabled ? '<span class="badge badge-active">启用</span>' : '<span class="badge badge-inactive">禁用</span>'}
                                 </h4>
                                 <p><span class="key-value-masked" onclick="toggleKeyVisibility(this, '${k.key}')" title="点击显示密钥">${'•'.repeat(k.key.length)}</span></p>
+                                ${limits.length > 0 ? `<p style="margin-top: 5px; font-size: 11px;">${limits.join(' | ')}</p>` : ''}
                             </div>
                         </div>
                         <div class="key-item-stats">
@@ -661,7 +700,7 @@
             try {
                 document.execCommand('copy');
                 alert('密钥已复制到剪贴板');
-            } catch () {
+            } catch (e) {
                 alert('复制失败，请手动复制');
             }
             document.body.removeChild(textarea);
@@ -709,6 +748,10 @@
             document.getElementById('editKeyValueDisplay').textContent = '•'.repeat(key.key.length);
             document.getElementById('editKeyRemark').value = key.remark || '';
             document.getElementById('editKeyEnabled').checked = key.is_enabled;
+            document.getElementById('editKeyDailyReqLimit').value = key.daily_req_limit || 0;
+            document.getElementById('editKeyTotalReqLimit').value = key.total_req_limit || 0;
+            document.getElementById('editKeyDailyCostLimit').value = key.daily_cost_limit || 0;
+            document.getElementById('editKeyTotalCostLimit').value = key.total_cost_limit || 0;
 
             document.getElementById('editKeyModal').classList.add('show');
         }
@@ -996,8 +1039,9 @@
             const model = document.getElementById('editModel').value;
             const isOpenAIFormat = document.getElementById('editIsOpenAIFormat').checked;
 
-            if (!baseUrl || !apiKey || !model) {
-                showTestResult('请填写完整的配置信息', false);
+            // apiKey 可以为空，此时使用提供商的已有密钥进行测试
+            if (!baseUrl || !model) {
+                showTestResult('请填写完整的配置信息（Base URL 和模型名称必填）', false);
                 return;
             }
 
@@ -1156,7 +1200,11 @@
 
             const data = {
                 remark: formData.get('remark') || '',
-                is_enabled: formData.get('is_enabled') === 'on'
+                is_enabled: formData.get('is_enabled') === 'on',
+                daily_req_limit: parseInt(formData.get('daily_req_limit')) || 0,
+                total_req_limit: parseInt(formData.get('total_req_limit')) || 0,
+                daily_cost_limit: parseFloat(formData.get('daily_cost_limit')) || 0,
+                total_cost_limit: parseFloat(formData.get('total_cost_limit')) || 0
             };
 
             try {
