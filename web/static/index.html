@@ -640,11 +640,31 @@
         }
 
         function copyKey(key) {
-            navigator.clipboard.writeText(key).then(() => {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(key).then(() => {
+                    alert('密钥已复制到剪贴板');
+                }).catch(() => {
+                    fallbackCopy(key);
+                });
+            } else {
+                fallbackCopy(key);
+            }
+        }
+
+        function fallbackCopy(key) {
+            const textarea = document.createElement('textarea');
+            textarea.value = key;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
                 alert('密钥已复制到剪贴板');
-            }).catch(() => {
+            } catch () {
                 alert('复制失败，请手动复制');
-            });
+            }
+            document.body.removeChild(textarea);
         }
 
         // 切换服务器密钥显示/隐藏

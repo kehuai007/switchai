@@ -324,6 +324,13 @@
             return '$' + cost.toFixed(6);
         }
 
+        function formatDuration(ms) {
+            if (ms >= 1000) {
+                return (ms / 1000).toFixed(2) + 's';
+            }
+            return ms + 'ms';
+        }
+
         async function loadHistory(page = 1) {
             try {
                 const res = await fetch(`/api/history?page=${page}&page_size=${pageSize}`);
@@ -352,7 +359,7 @@
                         <td>${record.output_tokens || 0}</td>
                         <td>${record.total_tokens || 0}</td>
                         <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
-                        <td>${record.duration_ms}ms</td>
+                        <td>${formatDuration(record.duration_ms)}</td>
                         <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
                     </tr>
                 `).join('');
@@ -426,7 +433,7 @@
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">耗时</div>
-                                <div class="detail-value">${record.duration_ms} ms</div>
+                                <div class="detail-value">${formatDuration(record.duration_ms)}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">请求大小</div>
@@ -704,7 +711,7 @@
                 <td>${record.output_tokens || 0}</td>
                 <td>${record.total_tokens || 0}</td>
                 <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
-                <td>${record.duration_ms}ms</td>
+                <td>${formatDuration(record.duration_ms)}</td>
                 <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
             `;
             recordsTable.insertBefore(tr, recordsTable.firstChild);
