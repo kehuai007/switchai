@@ -44,13 +44,15 @@ type ProviderStats struct {
 }
 
 type KeyStats struct {
-	KeyID        string   `json:"key_id"`
-	InputTokens  int      `json:"input_tokens"`
-	OutputTokens int      `json:"output_tokens"`
-	TotalTokens  int      `json:"total_tokens"`
-	TotalCost    float64  `json:"total_cost"`
-	IPAddresses  []string `json:"ip_addresses"`
-	RequestCount int      `json:"request_count"`
+	KeyID         string   `json:"key_id"`
+	InputTokens   int      `json:"input_tokens"`
+	OutputTokens  int      `json:"output_tokens"`
+	TotalTokens   int      `json:"total_tokens"`
+	TotalCost     float64  `json:"total_cost"`
+	IPAddresses   []string `json:"ip_addresses"`
+	RequestCount  int      `json:"request_count"`
+	TodayReqCount int      `json:"today_req_count"`
+	TodayCost     float64  `json:"today_cost"`
 }
 
 var (
@@ -390,7 +392,8 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	})
 
 	// Get key stats
-	keyRows, err := db.Query(`SELECT key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count FROM key_stats`)
+	today := time.Now().Format("2006-01-02")
+	keyRows, err := db.Query(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens, ks.total_tokens, ks.total_cost, ks.ip_addresses, ks.request_count, COALESCE(kds.request_count, 0) as today_req_count, COALESCE(kds.total_cost, 0.0) as today_cost FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?`, today)
 	if err != nil {
 		logger.Error("Failed to get key stats: %v", err)
 		return emptySummary()
@@ -401,7 +404,7 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	for keyRows.Next() {
 		var ks KeyStats
 		var ipsJSON string
-		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount); err != nil {
+		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount, &ks.TodayReqCount, &ks.TodayCost); err != nil {
 			continue
 		}
 		json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)

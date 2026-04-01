@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SwitchAI - Claude API 聚合服务</title>
+    <title>SwitchAI - Anthropic API 聚合服务</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
@@ -143,7 +143,7 @@
     <!-- Main Content -->
     <div id="mainContent" class="container hidden">
         <h1 style="display: flex; justify-content: space-between; align-items: center;">
-            <span>SwitchAI - Claude API 聚合服务</span>
+            <span>SwitchAI - Anthropic API 聚合服务</span>
             <div style="display: flex; gap: 10px;">
                 <a href="/log.html" style="font-size: 16px; color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: all 0.3s;">Token Stats</a>
                 <button class="btn-danger" onclick="doLogout()" style="padding: 8px 16px;">退出登录</button>
@@ -251,11 +251,12 @@
                     <input type="text" name="model" required placeholder="step-3.5-flash">
                 </div>
                 <div class="form-group">
-                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" name="is_openai_format" style="width: auto; cursor: pointer;">
-                        <span>使用 OpenAI 格式接口</span>
-                    </label>
-                    <p style="font-size: 12px; color: #666; margin-top: 5px;">勾选此项表示该厂商使用 OpenAI 兼容的 API 格式</p>
+                    <label>API 格式</label>
+                    <select name="is_openai_format" style="padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; width: 100%;">
+                        <option value="false">Anthropic 格式</option>
+                        <option value="true">OpenAI 格式</option>
+                    </select>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">选择该厂商使用的 API 格式</p>
                 </div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
                     <button type="button" class="btn-danger" onclick="hideAddModal()">取消</button>
@@ -288,11 +289,12 @@
                     <input type="text" name="model" id="editModel" required placeholder="step-3.5-flash">
                 </div>
                 <div class="form-group">
-                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" name="is_openai_format" id="editIsOpenAIFormat" style="width: auto; cursor: pointer;">
-                        <span>使用 OpenAI 格式接口</span>
-                    </label>
-                    <p style="font-size: 12px; color: #666; margin-top: 5px;">勾选此项表示该厂商使用 OpenAI 兼容的 API 格式</p>
+                    <label>API 格式</label>
+                    <select name="is_openai_format" id="editIsOpenAIFormat" style="padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; width: 100%;">
+                        <option value="false">Anthropic 格式</option>
+                        <option value="true">OpenAI 格式</option>
+                    </select>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">选择该厂商使用的 API 格式</p>
                 </div>
                 <div id="testResult" class="hidden" style="margin-bottom: 15px; padding: 10px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
@@ -365,7 +367,18 @@
                         </div>
                     </div>
                 </div>
-                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <div style="border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px;">
+                    <h4 style="margin-bottom: 10px; color: #4a5568;">测试 API 连接</h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="editKeyProviderType" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            <option value="anthropic">Anthropic 接口</option>
+                            <option value="openai">OpenAI 接口</option>
+                        </select>
+                        <button type="button" class="btn-warning" onclick="testServerKey()">测试连接</button>
+                    </div>
+                    <div id="editKeyTestResult" class="hidden" style="margin-top: 10px; padding: 10px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></div>
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px;">
                     <button type="button" class="btn-danger" onclick="hideEditKeyModal()">取消</button>
                     <button type="submit" class="btn-success">保存</button>
                 </div>
@@ -613,24 +626,24 @@
             }
 
             list.innerHTML = serverKeys.map((k, index) => {
-                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost: 0, request_count: 0, ip_addresses: [] };
+                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost: 0, request_count: 0, today_req_count: 0, today_cost: 0, ip_addresses: [] };
                 const ips = stat.ip_addresses ? stat.ip_addresses.join(', ') : '无';
                 const costDisplay = stat.total_cost > 0 ? '$' + stat.total_cost.toFixed(4) : '$0';
+                const todayCostDisplay = stat.today_cost > 0 ? '$' + stat.today_cost.toFixed(4) : '$0';
 
                 // 构建限额显示
                 const limits = [];
                 if (k.daily_req_limit > 0) {
-                    limits.push(`<span style="color: #ed8936;">日请求 ${stat.request_count || 0}/${k.daily_req_limit}</span>`);
+                    limits.push(`<span style="color: #ed8936;">日请求 ${stat.today_req_count || 0}/${k.daily_req_limit}</span>`);
                 }
                 if (k.total_req_limit > 0) {
                     limits.push(`<span style="color: #ed8936;">总请求 ${stat.request_count || 0}/${k.total_req_limit}</span>`);
                 }
                 if (k.daily_cost_limit > 0) {
-                    const dailyCost = stat.total_cost || 0;
-                    limits.push(`<span style="color: #ed8936;">日花费 $${dailyCost.toFixed(4)}/$${k.daily_cost_limit.toFixed(2)}</span>`);
+                    limits.push(`<span style="color: #ed8936;">日花费 ${todayCostDisplay}/$${k.daily_cost_limit.toFixed(2)}</span>`);
                 }
                 if (k.total_cost_limit > 0) {
-                    limits.push(`<span style="color: #ed8936;">总花费 $${(stat.total_cost || 0).toFixed(4)}/$${k.total_cost_limit.toFixed(2)}</span>`);
+                    limits.push(`<span style="color: #ed8936;">总花费 ${costDisplay}/$${k.total_cost_limit.toFixed(2)}</span>`);
                 }
 
                 return `
@@ -648,24 +661,20 @@
                         </div>
                         <div class="key-item-stats">
                             <div class="key-stat">
-                                <div class="key-stat-value">${stat.input_tokens.toLocaleString()}</div>
-                                <div class="key-stat-label">输入Token</div>
-                            </div>
-                            <div class="key-stat">
-                                <div class="key-stat-value">${stat.output_tokens.toLocaleString()}</div>
-                                <div class="key-stat-label">输出Token</div>
-                            </div>
-                            <div class="key-stat">
-                                <div class="key-stat-value">${stat.total_tokens.toLocaleString()}</div>
-                                <div class="key-stat-label">总Token</div>
+                                <div class="key-stat-value">${stat.today_req_count}</div>
+                                <div class="key-stat-label">今日请求</div>
                             </div>
                             <div class="key-stat">
                                 <div class="key-stat-value">${stat.request_count}</div>
-                                <div class="key-stat-label">请求数</div>
+                                <div class="key-stat-label">总请求</div>
+                            </div>
+                            <div class="key-stat">
+                                <div class="key-stat-value">${todayCostDisplay}</div>
+                                <div class="key-stat-label">今日花费</div>
                             </div>
                             <div class="key-stat">
                                 <div class="key-stat-value">${costDisplay}</div>
-                                <div class="key-stat-label">消耗</div>
+                                <div class="key-stat-label">总花费</div>
                             </div>
                         </div>
                         <div class="key-item-actions">
@@ -974,7 +983,7 @@
                             <div class="provider-stat-label">模型</div>
                         </div>
                         <div class="provider-stat">
-                            <div class="provider-stat-value">${p.is_openai_format ? 'OpenAI' : 'Claude'}</div>
+                            <div class="provider-stat-value">${p.is_openai_format ? 'OpenAI' : 'Anthropic'}</div>
                             <div class="provider-stat-label">格式</div>
                         </div>
                     </div>
@@ -1026,7 +1035,7 @@
             document.getElementById('editBaseUrl').value = provider.base_url;
             document.getElementById('editApiKey').value = ''; // 不返回API Key，保持为空
             document.getElementById('editModel').value = provider.model;
-            document.getElementById('editIsOpenAIFormat').checked = provider.is_openai_format || false;
+            document.getElementById('editIsOpenAIFormat').value = provider.is_openai_format ? 'true' : 'false';
 
             showEditModal();
         }
@@ -1037,7 +1046,7 @@
             const baseUrl = document.getElementById('editBaseUrl').value;
             const apiKey = document.getElementById('editApiKey').value;
             const model = document.getElementById('editModel').value;
-            const isOpenAIFormat = document.getElementById('editIsOpenAIFormat').checked;
+            const isOpenAIFormat = document.getElementById('editIsOpenAIFormat').value === 'true';
 
             // apiKey 可以为空，此时使用提供商的已有密钥进行测试
             if (!baseUrl || !model) {
@@ -1077,6 +1086,51 @@
             }
         }
 
+        async function testServerKey() {
+            const keyId = document.getElementById('editKeyId').value;
+            const providerType = document.getElementById('editKeyProviderType').value;
+            const resultEl = document.getElementById('editKeyTestResult');
+
+            resultEl.classList.remove('hidden');
+            resultEl.style.background = '#feebc8';
+            resultEl.style.color = '#744210';
+            resultEl.textContent = '正在测试连接...';
+
+            try {
+                const res = await fetch(`/api/server-keys/${keyId}/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider_type: providerType })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    let msg = `✓ 连接成功！状态码: ${data.status}`;
+                    if (data.aiReply) {
+                        msg += `\n\nAI 回复: ${data.aiReply}`;
+                    } else if (data.response) {
+                        try {
+                            const respJson = JSON.parse(data.response);
+                            msg += `\n\n原始响应:\n${JSON.stringify(respJson, null, 2)}`;
+                        } catch {
+                            msg += `\n\n原始响应: ${data.response}`;
+                        }
+                    }
+                    resultEl.style.background = '#c6f6d5';
+                    resultEl.style.color = '#22543d';
+                    resultEl.innerHTML = msg.replace(/\n/g, '<br>');
+                } else {
+                    resultEl.style.background = '#fed7d7';
+                    resultEl.style.color = '#742a2a';
+                    resultEl.innerHTML = `✗ 连接失败 (${data.status}): ${data.response || data.error}`.replace(/\n/g, '<br>');
+                }
+            } catch (err) {
+                resultEl.style.background = '#fed7d7';
+                resultEl.style.color = '#742a2a';
+                resultEl.textContent = `✗ 连接错误: ${err.message}`;
+            }
+        }
+
         function showTestResult(message, success, aiReply) {
             const el = document.getElementById('testResult');
             el.classList.remove('hidden');
@@ -1103,7 +1157,7 @@
                 base_url: formData.get('base_url'),
                 api_key: formData.get('api_key'),
                 model: formData.get('model').trim(),
-                is_openai_format: formData.get('is_openai_format') === 'on'
+                is_openai_format: formData.get('is_openai_format') === 'true'
             };
 
             try {
@@ -1136,7 +1190,7 @@
                 base_url: formData.get('base_url'),
                 api_key: formData.get('api_key'),
                 model: formData.get('model').trim(),
-                is_openai_format: formData.get('is_openai_format') === 'on',
+                is_openai_format: formData.get('is_openai_format') === 'true',
                 is_active: providers.find(p => p.id === id)?.is_active || false,
                 created_at: providers.find(p => p.id === id)?.created_at || new Date().toISOString()
             };

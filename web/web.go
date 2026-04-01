@@ -12,7 +12,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"switchai/config"
 	"switchai/history"
 	"switchai/stats"
@@ -78,6 +77,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.DELETE("/server-keys/:id", deleteServerKey)
 		api.POST("/server-keys/generate", generateServerKey)
 		api.GET("/server-keys/:id/stats", getServerKeyStats)
+		api.POST("/server-keys/:id/test", testServerKey)
 
 		// 提供商管理
 		api.GET("/providers", getProviders)
@@ -125,19 +125,10 @@ func authMiddleware() gin.HandlerFunc {
 		}
 
 		cfg := config.GetConfig()
-		storedToken := cfg.GetSessionToken()
-		storedExpiry := cfg.GetSessionExpiry()
 
-		// 验证 session token
-		if cookieToken != storedToken || storedToken == "" {
+		// 验证 session token（多端登录支持）
+		if !cfg.ValidateSessionToken(cookieToken) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "会话无效，请重新登录"})
-			c.Abort()
-			return
-		}
-
-		// 检查会话是否过期
-		if time.Now().Unix() > storedExpiry {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "会话已过期，请重新登录"})
 			c.Abort()
 			return
 		}
@@ -175,13 +166,13 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// 验证成功，生成会话 token 并存储到配置文件
+	// 验证成功，生成会话 token 并添加到列表（支持多端登录）
 	sessionToken := generateSessionToken()
-	if err := cfg.SetSessionToken(sessionToken); err != nil {
+	if err := cfg.AddSessionToken(sessionToken); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存会话失败"})
 		return
 	}
-	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true) // 24小时
+	c.SetCookie(loginCookie, sessionToken, 0, "/", "", false, true) // 永不过期
 	c.JSON(http.StatusOK, gin.H{"message": "登录成功"})
 }
 
@@ -225,9 +216,12 @@ func totpSetup(c *gin.Context) {
 	})
 }
 
-// logout 处理退出登录
+// logout 处理退出登录（只清除当前 token，不影响其他设备）
 func logout(c *gin.Context) {
-	config.GetConfig().ClearSessionToken()
+	cookieToken, _ := c.Cookie(loginCookie)
+	if cookieToken != "" {
+		config.GetConfig().RemoveSessionToken(cookieToken)
+	}
 	c.SetCookie(loginCookie, "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
@@ -262,13 +256,13 @@ func totpVerify(c *gin.Context) {
 		return
 	}
 
-	// 生成会话 token 并存储到配置文件
+	// 生成会话 token 并添加到列表
 	sessionToken := generateSessionToken()
-	if err := cfg.SetSessionToken(sessionToken); err != nil {
+	if err := cfg.AddSessionToken(sessionToken); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存会话失败"})
 		return
 	}
-	c.SetCookie(loginCookie, sessionToken, 86400, "/", "", false, true)
+	c.SetCookie(loginCookie, sessionToken, 0, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "2FA绑定成功"})
 }
 
@@ -520,9 +514,13 @@ func testProvider(c *gin.Context) {
 
 	provider := cfg.GetProviderByID(id)
 	if provider == nil {
+		log.Printf("❌ testProvider: provider not found, id=%s", id)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Provider not found"})
 		return
 	}
+
+	log.Printf("🔍 testProvider: id=%s, name=%s, baseURL=%s, apiKey=%s, isOpenAI=%v",
+		id, provider.Name, provider.BaseURL, provider.APIKey[:10]+"...", provider.IsOpenAIFormat)
 
 	// 根据提供商格式构建测试请求
 	var reqBody []byte
@@ -539,12 +537,8 @@ func testProvider(c *gin.Context) {
 			"max_tokens": 10,
 		}
 		reqBody, _ = json.Marshal(openAIReq)
-		baseURL := strings.TrimSuffix(provider.BaseURL, "/")
-		if strings.HasSuffix(baseURL, "/v1") {
-			targetURL = baseURL + "/chat/completions"
-		} else {
-			targetURL = baseURL + "/v1/chat/completions"
-		}
+		targetURL = provider.BaseURL + "/chat/completions"
+		log.Printf("🔗 OpenAI format, targetURL: %s", targetURL)
 	} else {
 		// Claude 格式
 		claudeReq := map[string]interface{}{
@@ -555,11 +549,13 @@ func testProvider(c *gin.Context) {
 			"max_tokens": 10,
 		}
 		reqBody, _ = json.Marshal(claudeReq)
-		targetURL = strings.TrimSuffix(provider.BaseURL, "/") + "/v1/messages"
+		targetURL = provider.BaseURL + "/v1/messages"
+		log.Printf("🔗 Claude format, targetURL: %s", targetURL)
 	}
 
 	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
 	if err != nil {
+		log.Printf("❌ testProvider: failed to create request: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
 		return
 	}
@@ -571,14 +567,21 @@ func testProvider(c *gin.Context) {
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	log.Printf("📤 testProvider: sending request to %s", targetURL)
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("❌ testProvider: request failed: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Connection failed: " + err.Error()})
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	maxLen := 200
+	if len(respBody) < maxLen {
+		maxLen = len(respBody)
+	}
+	log.Printf("📥 testProvider: response status=%d, body=%s", resp.StatusCode, string(respBody[:maxLen]))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		// 解析响应，提取 AI 的回复内容
@@ -620,6 +623,150 @@ func testProvider(c *gin.Context) {
 			"status":  resp.StatusCode,
 			"message": "Connection failed",
 			"response": string(respBody),
+		})
+	}
+}
+
+func testServerKey(c *gin.Context) {
+	keyID := c.Param("id")
+
+	var req struct {
+		ProviderType string `json:"provider_type"` // "anthropic" 或 "openai"
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// 根据选择的格式确定使用哪个提供商进行测试
+	isOpenAIFormat := req.ProviderType == "openai"
+
+	cfg := config.GetConfig()
+
+	// 获取要测试的服务器密钥
+	serverKey := cfg.GetServerKeyByID(keyID)
+	if serverKey == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Server key not found"})
+		return
+	}
+
+	// 始终使用激活的提供商，格式转换由代理自动处理
+	provider := cfg.GetActiveProvider()
+	if provider == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No active provider configured"})
+		return
+	}
+
+	log.Printf("🔍 Testing server-key: %s, provider: %s (format: %s, key type: %s)", keyID, provider.Name, req.ProviderType, serverKey.Key[:12]+"...")
+
+	// 构建测试请求，发送到本服务的代理端点
+	var reqBody []byte
+	var targetURL string
+
+	// 获取本服务地址
+	baseURL := "http://" + c.Request.Host
+
+	// 根据要测试的格式发送请求，代理会自动进行格式转换
+	if isOpenAIFormat {
+		openAIReq := map[string]interface{}{
+			"model": provider.Model,
+			"messages": []map[string]interface{}{
+				{"role": "user", "content": "hi"},
+			},
+			"max_tokens": 10,
+		}
+		reqBody, _ = json.Marshal(openAIReq)
+		targetURL = baseURL + "/v1/chat/completions"
+	} else {
+		claudeReq := map[string]interface{}{
+			"model": provider.Model,
+			"messages": []map[string]interface{}{
+				{"role": "user", "content": "hi"},
+			},
+			"max_tokens": 10,
+		}
+		reqBody, _ = json.Marshal(claudeReq)
+		targetURL = baseURL + "/v1/messages"
+	}
+
+	log.Printf("🔗 Test request URL: %s", targetURL)
+	log.Printf("📤 Test request body: %s", string(reqBody))
+
+	testReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// 使用服务器密钥进行授权
+	testReq.Header.Set("Authorization", "Bearer "+serverKey.Key)
+	testReq.Header.Set("Content-Type", "application/json")
+	if !isOpenAIFormat {
+		testReq.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	// 记录请求详情（key 只显示前后各4位）
+	maskedKey := serverKey.Key
+	if len(maskedKey) > 8 {
+		maskedKey = maskedKey[:4] + "..." + maskedKey[len(maskedKey)-4:]
+	}
+	log.Printf("📡 Request details - BaseURL: %s, Format: %s, Key: %s", baseURL, req.ProviderType, maskedKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(testReq)
+	if err != nil {
+		log.Printf("❌ Server-key test connection failed: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Connection failed: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	log.Printf("📥 Test response - Status: %d, Body: %s", resp.StatusCode, string(respBody))
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var aiReply string
+		// 根据选择的格式解析响应
+		if isOpenAIFormat {
+			var openaiResp struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal(respBody, &openaiResp) == nil && len(openaiResp.Choices) > 0 {
+				aiReply = openaiResp.Choices[0].Message.Content
+			}
+		} else {
+			var claudeResp struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if json.Unmarshal(respBody, &claudeResp) == nil && len(claudeResp.Content) > 0 {
+				aiReply = claudeResp.Content[0].Text
+			}
+		}
+
+		log.Printf("✅ Server-key test successful via provider: %s", provider.Name)
+		c.JSON(http.StatusOK, gin.H{
+			"success":      true,
+			"status":       resp.StatusCode,
+			"message":      "Connection successful",
+			"response":     string(respBody),
+			"aiReply":      aiReply,
+			"providerName": provider.Name,
+		})
+	} else {
+		log.Printf("❌ Server-key test failed - Status: %d, Response: %s", resp.StatusCode, string(respBody))
+		c.JSON(http.StatusOK, gin.H{
+			"success":      false,
+			"status":       resp.StatusCode,
+			"message":      "Connection failed",
+			"response":     string(respBody),
+			"providerName": provider.Name,
 		})
 	}
 }

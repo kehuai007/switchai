@@ -63,8 +63,8 @@ func main() {
 		}
 		logger.Info("2FA has been reset successfully")
 		fmt.Println("✅ 2FA 数据已重置，访问页面将跳转到首次绑定")
-		// Also clear session to force re-login
-		cfg.ClearSessionToken()
+		// Also clear all sessions to force re-login
+		cfg.ClearAllSessionTokens()
 		os.Exit(0)
 		return
 	}

@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"sort"
 	"switchai/appdata"
 	"sync"
@@ -11,6 +12,12 @@ import (
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
+
+// SessionTokenEntry represents a single session token entry
+type SessionTokenEntry struct {
+	Token     string    `json:"token"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 type Provider struct {
 	ID             string `json:"id"`
@@ -38,15 +45,14 @@ type ServerKey struct {
 }
 
 type Config struct {
-	Providers      []Provider  `json:"providers"`
-	ServerKeys     []ServerKey `json:"server_keys"` // 服务器密钥列表
-	ActiveProvider string      `json:"active_provider"`
-	TOTPSecret    string      `json:"totp_secret"`    // TOTP 2FA 密钥
-	TOTPEnabled   bool        `json:"totp_enabled"`    // 是否已启用 2FA
-	SessionToken  string      `json:"session_token"`   // 持久化的会话 token
-	SessionExpiry int64       `json:"session_expiry"`  // 会话过期时间戳
-	SkipAuth      bool        `json:"skip_auth"`       // 跳过认证（内网部署）
-	mu            sync.RWMutex
+	Providers      []Provider            `json:"providers"`
+	ServerKeys     []ServerKey           `json:"server_keys"` // 服务器密钥列表
+	ActiveProvider string                `json:"active_provider"`
+	TOTPSecret     string               `json:"totp_secret"`     // TOTP 2FA 密钥
+	TOTPEnabled    bool                 `json:"totp_enabled"`    // 是否已启用 2FA
+	SessionTokens  []SessionTokenEntry  `json:"session_tokens"`   // 多端登录的会话 token 列表
+	SkipAuth       bool                 `json:"skip_auth"`        // 跳过认证（内网部署）
+	mu             sync.RWMutex
 }
 
 var skipAuthMode bool
@@ -108,7 +114,8 @@ func initDB() error {
 		model TEXT,
 		is_active INTEGER,
 		created_at TEXT,
-		order_num INTEGER
+		order_num INTEGER,
+		is_openai_format INTEGER DEFAULT 0
 	);
 	CREATE TABLE IF NOT EXISTS server_keys (
 		id TEXT PRIMARY KEY,
@@ -124,7 +131,14 @@ func initDB() error {
 	);
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// 迁移：添加 is_openai_format 列（如果不存在）
+	db.Exec("ALTER TABLE providers ADD COLUMN is_openai_format INTEGER DEFAULT 0")
+
+	return nil
 }
 
 func (c *Config) Load() error {
@@ -155,24 +169,25 @@ func (c *Config) Load() error {
 	}
 	c.TOTPEnabled = totpEnabled == 1
 
-	// 加载 session_token
-	var sessionToken string
-	err = db.QueryRow("SELECT value FROM config WHERE key = 'session_token'").Scan(&sessionToken)
+	// 加载 session_tokens (JSON 数组)
+	var sessionTokensJSON string
+	err = db.QueryRow("SELECT value FROM config WHERE key = 'session_tokens'").Scan(&sessionTokensJSON)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	c.SessionToken = sessionToken
-
-	// 加载 session_expiry
-	var sessionExpiry int64
-	err = db.QueryRow("SELECT value FROM config WHERE key = 'session_expiry'").Scan(&sessionExpiry)
-	if err != nil && err != sql.ErrNoRows {
-		return err
+	if sessionTokensJSON != "" {
+		json.Unmarshal([]byte(sessionTokensJSON), &c.SessionTokens)
+	} else {
+		// 兼容旧版本：尝试加载旧的 session_token
+		var oldToken string
+		err = db.QueryRow("SELECT value FROM config WHERE key = 'session_token'").Scan(&oldToken)
+		if err == nil && oldToken != "" {
+			c.SessionTokens = []SessionTokenEntry{{Token: oldToken, CreatedAt: time.Now()}}
+		}
 	}
-	c.SessionExpiry = sessionExpiry
 
 	// 加载 providers
-	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num FROM providers ORDER BY order_num")
+	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num, COALESCE(is_openai_format, 0) FROM providers ORDER BY order_num")
 	if err != nil {
 		return err
 	}
@@ -182,10 +197,12 @@ func (c *Config) Load() error {
 	for rows.Next() {
 		var p Provider
 		var isActive int
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order); err != nil {
+		var isOpenAIFormat int
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order, &isOpenAIFormat); err != nil {
 			return err
 		}
 		p.IsActive = isActive == 1
+		p.IsOpenAIFormat = isOpenAIFormat == 1
 		c.Providers = append(c.Providers, p)
 	}
 
@@ -240,14 +257,9 @@ func (c *Config) save() error {
 		return err
 	}
 
-	// 保存 session_token
-	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('session_token', ?)", c.SessionToken)
-	if err != nil {
-		return err
-	}
-
-	// 保存 session_expiry
-	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('session_expiry', ?)", c.SessionExpiry)
+	// 保存 session_tokens (JSON 数组)
+	sessionTokensJSON, _ := json.Marshal(c.SessionTokens)
+	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('session_tokens', ?)", string(sessionTokensJSON))
 	if err != nil {
 		return err
 	}
@@ -262,8 +274,12 @@ func (c *Config) save() error {
 		if p.IsActive {
 			isActive = 1
 		}
-		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order)
+		isOpenAIFormat := 0
+		if p.IsOpenAIFormat {
+			isOpenAIFormat = 1
+		}
+		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat)
 		if err != nil {
 			return err
 		}
@@ -322,6 +338,29 @@ func (c *Config) GetProviderByID(id string) *Provider {
 		}
 	}
 	return nil
+}
+
+// GetProviderByFormat 根据API格式获取提供商，优先返回激活的提供商
+func (c *Config) GetProviderByFormat(isOpenAIFormat bool) *Provider {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// 优先返回激活的且格式匹配的提供商
+	for i := range c.Providers {
+		if c.Providers[i].ID == c.ActiveProvider && c.Providers[i].IsOpenAIFormat == isOpenAIFormat {
+			return &c.Providers[i]
+		}
+	}
+
+	// 否则返回第一个格式匹配的提供商
+	for i := range c.Providers {
+		if c.Providers[i].IsOpenAIFormat == isOpenAIFormat {
+			return &c.Providers[i]
+		}
+	}
+
+	// 没有找到匹配格式的提供商，返回活跃提供商（可能格式不匹配）
+	return c.GetActiveProvider()
 }
 
 func (c *Config) AddProvider(p Provider) error {
@@ -584,37 +623,58 @@ func (c *Config) EnableTOTP() error {
 	return c.save()
 }
 
-// GetSessionToken 获取会话 token
-func (c *Config) GetSessionToken() string {
+// GetSessionTokens 获取所有会话 tokens
+func (c *Config) GetSessionTokens() []SessionTokenEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.SessionToken
+	return c.SessionTokens
 }
 
-// GetSessionExpiry 获取会话过期时间
-func (c *Config) GetSessionExpiry() int64 {
+// ValidateSessionToken 验证会话 token 是否有效
+func (c *Config) ValidateSessionToken(token string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.SessionExpiry
+
+	for _, entry := range c.SessionTokens {
+		if entry.Token == token {
+			return true
+		}
+	}
+	return false
 }
 
-// SetSessionToken 设置会话 token（带 24 小时过期）
-func (c *Config) SetSessionToken(token string) error {
+// AddSessionToken 添加新的会话 token
+func (c *Config) AddSessionToken(token string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.SessionToken = token
-	c.SessionExpiry = time.Now().Add(24 * time.Hour).Unix()
+	c.SessionTokens = append(c.SessionTokens, SessionTokenEntry{
+		Token:     token,
+		CreatedAt: time.Now(),
+	})
 	return c.save()
 }
 
-// ClearSessionToken 清除会话 token
-func (c *Config) ClearSessionToken() error {
+// RemoveSessionToken 移除指定的会话 token
+func (c *Config) RemoveSessionToken(token string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.SessionToken = ""
-	c.SessionExpiry = 0
+	for i, entry := range c.SessionTokens {
+		if entry.Token == token {
+			c.SessionTokens = append(c.SessionTokens[:i], c.SessionTokens[i+1:]...)
+			return c.save()
+		}
+	}
+	return nil
+}
+
+// ClearAllSessionTokens 清除所有会话 token
+func (c *Config) ClearAllSessionTokens() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.SessionTokens = nil
 	return c.save()
 }
 
