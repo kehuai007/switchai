@@ -71,13 +71,17 @@
         .token-label { font-size: 12px; opacity: 0.9; margin-bottom: 5px; }
         .token-value { font-size: 24px; font-weight: bold; }
         .token-value.cost { color: #ffd700; }
+        .footer { text-align: center; padding: 20px; color: #999; font-size: 12px; }
+        .footer a { color: #667eea; text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>
             <span>📊 Token 统计日志</span>
-            <div class="nav-links">
+            <div class="nav-links" style="display: flex; align-items: center; gap: 15px;">
+                <a href="https://github.com/kehuai007/switchai" target="_blank" style="font-size: 12px; color: #667eea; text-decoration: none;">v1.1.1</a>
                 <a href="/">← 返回首页</a>
             </div>
         </h1>
@@ -218,17 +222,17 @@
                             <div class="token-summary-box">
                                 <div class="token-item">
                                     <div class="token-label">总输入Token</div>
-                                    <div class="token-value">${(stat.input_tokens || 0).toLocaleString()}</div>
+                                    <div class="token-value">${formatToken(stat.input_tokens || 0)}</div>
                                 </div>
                                 <div class="token-divider"></div>
                                 <div class="token-item">
                                     <div class="token-label">总输出Token</div>
-                                    <div class="token-value">${(stat.output_tokens || 0).toLocaleString()}</div>
+                                    <div class="token-value">${formatToken(stat.output_tokens || 0)}</div>
                                 </div>
                                 <div class="token-divider"></div>
                                 <div class="token-item">
                                     <div class="token-label">总Token</div>
-                                    <div class="token-value">${(stat.total_tokens || 0).toLocaleString()}</div>
+                                    <div class="token-value">${formatToken(stat.total_tokens || 0)}</div>
                                 </div>
                                 <div class="token-divider"></div>
                                 <div class="token-item">
@@ -324,6 +328,15 @@
             return '$' + cost.toFixed(6);
         }
 
+        function formatToken(num) {
+            if (num >= 1024 * 1024) {
+                return (num / (1024 * 1024)).toFixed(2) + 'M';
+            } else if (num >= 1024) {
+                return (num / 1024).toFixed(2) + 'K';
+            }
+            return num.toLocaleString();
+        }
+
         function formatDuration(ms) {
             if (ms >= 1000) {
                 return (ms / 1000).toFixed(2) + 's';
@@ -355,9 +368,9 @@
                         <td>${record.provider || '-'}</td>
                         <td>${record.model || '-'}</td>
                         <td><span class="badge ${record.path && record.path.includes('/v1/chat') ? 'badge-stream' : 'badge-non-stream'}">${record.path && record.path.includes('/v1/chat') ? 'OpenAI' : 'Anthropic'}</span></td>
-                        <td>${record.input_tokens || 0}</td>
-                        <td>${record.output_tokens || 0}</td>
-                        <td>${record.total_tokens || 0}</td>
+                        <td>${formatToken(record.input_tokens || 0)}</td>
+                        <td>${formatToken(record.output_tokens || 0)}</td>
+                        <td>${formatToken(record.total_tokens || 0)}</td>
                         <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
                         <td>${formatDuration(record.duration_ms)}</td>
                         <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
@@ -451,17 +464,17 @@
                         <div class="token-summary-box">
                             <div class="token-item">
                                 <div class="token-label">输入 Token</div>
-                                <div class="token-value">${record.input_tokens || 0}</div>
+                                <div class="token-value">${formatToken(record.input_tokens || 0)}</div>
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
                                 <div class="token-label">输出 Token</div>
-                                <div class="token-value">${record.output_tokens || 0}</div>
+                                <div class="token-value">${formatToken(record.output_tokens || 0)}</div>
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
                                 <div class="token-label">总 Token</div>
-                                <div class="token-value">${record.total_tokens || 0}</div>
+                                <div class="token-value">${formatToken(record.total_tokens || 0)}</div>
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
@@ -575,9 +588,9 @@
         }
 
         function updateStats(data) {
-            document.getElementById('totalInput').textContent = (data.total_input_tokens || 0).toLocaleString();
-            document.getElementById('totalOutput').textContent = (data.total_output_tokens || 0).toLocaleString();
-            document.getElementById('totalTokens').textContent = (data.total_tokens || 0).toLocaleString();
+            document.getElementById('totalInput').textContent = formatToken(data.total_input_tokens || 0);
+            document.getElementById('totalOutput').textContent = formatToken(data.total_output_tokens || 0);
+            document.getElementById('totalTokens').textContent = formatToken(data.total_tokens || 0);
             document.getElementById('totalCost').textContent = formatCost(data.total_cost || 0);
             document.getElementById('totalRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
 
@@ -593,15 +606,15 @@
                         <div class="provider-stats-grid">
                             <div class="provider-stat-item">
                                 <div class="provider-stat-label">输入Token</div>
-                                <div class="provider-stat-value">${provider.input_tokens.toLocaleString()}</div>
+                                <div class="provider-stat-value">${formatToken(provider.input_tokens)}</div>
                             </div>
                             <div class="provider-stat-item">
                                 <div class="provider-stat-label">输出Token</div>
-                                <div class="provider-stat-value">${provider.output_tokens.toLocaleString()}</div>
+                                <div class="provider-stat-value">${formatToken(provider.output_tokens)}</div>
                             </div>
                             <div class="provider-stat-item">
                                 <div class="provider-stat-label">总Token</div>
-                                <div class="provider-stat-value">${provider.total_tokens.toLocaleString()}</div>
+                                <div class="provider-stat-value">${formatToken(provider.total_tokens)}</div>
                             </div>
                             <div class="provider-stat-item">
                                 <div class="provider-stat-label">请求次数</div>
@@ -707,9 +720,9 @@
                 <td>${record.provider || '-'}</td>
                 <td>${record.model || '-'}</td>
                 <td><span class="badge ${record.path && record.path.includes('/v1/chat') ? 'badge-stream' : 'badge-non-stream'}">${record.path && record.path.includes('/v1/chat') ? 'OpenAI' : 'Anthropic'}</span></td>
-                <td>${record.input_tokens || 0}</td>
-                <td>${record.output_tokens || 0}</td>
-                <td>${record.total_tokens || 0}</td>
+                <td>${formatToken(record.input_tokens || 0)}</td>
+                <td>${formatToken(record.output_tokens || 0)}</td>
+                <td>${formatToken(record.total_tokens || 0)}</td>
                 <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
                 <td>${formatDuration(record.duration_ms)}</td>
                 <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
@@ -759,11 +772,13 @@
         }
 
         // 初始加载
-        loadServerKeys();
-        loadStats();
-        loadHistory();
-        connectWebSocket();
-        connectStatsWebSocket();
+        (async () => {
+            await loadServerKeys();
+            await loadStats();
+            await loadHistory();
+            connectWebSocket();
+            connectStatsWebSocket();
+        })();
     </script>
 </body>
 </html>

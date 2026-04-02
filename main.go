@@ -15,6 +15,7 @@ import (
 	"switchai/proxy"
 	"switchai/service"
 	"switchai/stats"
+	"switchai/update"
 	"switchai/web"
 	"syscall"
 	"time"
@@ -22,6 +23,18 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
+
+// 版本信息（编译时通过 -ldflags 注入）
+var (
+	versionMajor = "0"
+	versionMinor = "0"
+	versionPatch = "0"
+	gitCommit    = ""
+)
+
+func init() {
+	update.InitWithCommitStr(versionMajor, versionMinor, versionPatch, gitCommit)
+}
 
 func main() {
 	// Parse command line flags
@@ -122,6 +135,25 @@ func startServer(port string) {
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: r,
+	}
+
+	// 启动自动更新器（服务模式下）
+	isService := update.IsRunningAsService()
+	if isService {
+		updater := update.NewAutoUpdater()
+		updater.SetUpdateCallback(func(result *update.CheckResult) {
+			logger.Info("自动下载并安装新版本: %s", result.Latest.String())
+			if err := update.DownloadAndInstall(result.DownloadURL); err != nil {
+				logger.Error("自动更新失败: %v", err)
+				return
+			}
+			// 更新完成后重启服务
+			if err := update.RestartService(); err != nil {
+				logger.Error("重启服务失败: %v", err)
+			}
+		})
+		go updater.Start()
+		logger.Info("自动更新服务已启动 (服务模式)")
 	}
 
 	// 启动服务器

@@ -56,12 +56,24 @@ jobs:
       # 步骤4：跨平台编译二进制（复用build.bat的编译参数：CGO_ENABLED=0、-ldflags="-s -w"）
       - name: Build Binary (${{ matrix.goos }}/${{ matrix.goarch }})
         run: |
+          # 获取版本信息
+          VERSION_TAG=${GITHUB_REF_NAME#v}
+          IFS='.' read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH <<< "$VERSION_TAG"
+          VERSION_MAJOR=${VERSION_MAJOR:-0}
+          VERSION_MINOR=${VERSION_MINOR:-0}
+          VERSION_PATCH=${VERSION_PATCH:-0}
+          GIT_COMMIT=${GITHUB_SHA}
+
+          echo "Version: v${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}"
+          echo "Commit: ${GIT_COMMIT}"
+
           # 设置Go跨平台编译环境变量
           export CGO_ENABLED=0
           export GOOS=${{ matrix.goos }}
           export GOARCH=${{ matrix.goarch }}
-          # 编译（参数和build.bat完全一致：精简编译、无CGO）
-          go build -ldflags="-s -w" -o dist/${{ matrix.binary_name }}
+
+          # 编译（注入版本和commit信息）
+          go build -ldflags="-s -w -X main.versionMajor=${VERSION_MAJOR} -X main.versionMinor=${VERSION_MINOR} -X main.versionPatch=${VERSION_PATCH} -X main.gitCommit=${GIT_COMMIT}" -o dist/${{ matrix.binary_name }}
         # 编译失败时立即终止
         continue-on-error: false
 

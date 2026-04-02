@@ -15,16 +15,45 @@ if ! command -v go &> /dev/null; then
     exit 1
 fi
 
+# Get git commit hash and version info
+GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
+GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+# Parse version from tag (format: v1.2.3)
+VERSION_MAJOR=0
+VERSION_MINOR=0
+VERSION_PATCH=0
+if [ -n "$GIT_TAG" ]; then
+    VERSION_MAJOR=$(echo "$GIT_TAG" | cut -d. -f1 | sed 's/v//')
+    VERSION_MINOR=$(echo "$GIT_TAG" | cut -d. -f2)
+    VERSION_PATCH=$(echo "$GIT_TAG" | cut -d. -f3)
+fi
+
+echo "Version: v${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}"
+echo "Commit: ${GIT_COMMIT}"
+echo ""
+
+# Build ldflags
+LDFLAGS="-s -w -X main.versionMajor=${VERSION_MAJOR} -X main.versionMinor=${VERSION_MINOR} -X main.versionPatch=${VERSION_PATCH} -X main.gitCommit=${GIT_COMMIT}"
+
 # Create dist directory
 mkdir -p dist
 
 echo "[1/2] Building for Windows (amd64)..."
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/switchai-windows-amd64.exe
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/switchai-windows-amd64.exe
+if [ $? -ne 0 ]; then
+    echo "ERROR: Windows build failed"
+    exit 1
+fi
 echo "Windows build completed: dist/switchai-windows-amd64.exe"
 
 echo ""
 echo "[2/2] Building for Linux (amd64)..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/switchai-linux-amd64
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/switchai-linux-amd64
+if [ $? -ne 0 ]; then
+    echo "ERROR: Linux build failed"
+    exit 1
+fi
 echo "Linux build completed: dist/switchai-linux-amd64"
 
 echo ""

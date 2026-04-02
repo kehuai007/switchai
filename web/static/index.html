@@ -105,6 +105,9 @@
         .key-item .ip-list { font-size: 12px; color: #888; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 
         .hidden { display: none !important; }
+        .footer { text-align: center; padding: 20px; color: #999; font-size: 12px; }
+        .footer a { color: #667eea; text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -144,7 +147,8 @@
     <div id="mainContent" class="container hidden">
         <h1 style="display: flex; justify-content: space-between; align-items: center;">
             <span>SwitchAI - Anthropic API 聚合服务</span>
-            <div style="display: flex; gap: 10px;">
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <a href="https://github.com/kehuai007/switchai" target="_blank" style="font-size: 12px; color: #667eea; text-decoration: none;">v1.1.1</a>
                 <a href="/log.html" style="font-size: 16px; color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: all 0.3s;">Token Stats</a>
                 <button class="btn-danger" onclick="doLogout()" style="padding: 8px 16px;">退出登录</button>
             </div>
@@ -833,17 +837,26 @@
         }
 
         function updateStats(data) {
-            document.getElementById('totalInput').textContent = data.total_input_tokens.toLocaleString();
-            document.getElementById('totalOutput').textContent = data.total_output_tokens.toLocaleString();
-            document.getElementById('totalTokens').textContent = data.total_tokens.toLocaleString();
+            document.getElementById('totalInput').textContent = formatToken(data.total_input_tokens || 0);
+            document.getElementById('totalOutput').textContent = formatToken(data.total_output_tokens || 0);
+            document.getElementById('totalTokens').textContent = formatToken(data.total_tokens || 0);
             document.getElementById('totalCost').textContent = '$' + (data.total_cost || 0).toFixed(4);
             document.getElementById('totalRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
         }
 
+        function formatToken(num) {
+            if (num >= 1024 * 1024) {
+                return (num / (1024 * 1024)).toFixed(2) + 'M';
+            } else if (num >= 1024) {
+                return (num / 1024).toFixed(2) + 'K';
+            }
+            return num.toLocaleString();
+        }
+
         function updateTodayStats(data) {
-            document.getElementById('todayInput').textContent = data.total_input_tokens.toLocaleString();
-            document.getElementById('todayOutput').textContent = data.total_output_tokens.toLocaleString();
-            document.getElementById('todayTokens').textContent = data.total_tokens.toLocaleString();
+            document.getElementById('todayInput').textContent = formatToken(data.total_input_tokens || 0);
+            document.getElementById('todayOutput').textContent = formatToken(data.total_output_tokens || 0);
+            document.getElementById('todayTokens').textContent = formatToken(data.total_tokens || 0);
             document.getElementById('todayCost').textContent = '$' + (data.total_cost || 0).toFixed(4);
             document.getElementById('todayRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
         }
@@ -855,7 +868,7 @@
             grid.innerHTML = dailyHistory.map(day => `
                 <div class="history-item ${day.date === today ? 'today' : ''}">
                     <div class="history-date">${day.date === today ? '今日' : day.date}</div>
-                    <div class="history-value">${day.total_tokens.toLocaleString()}</div>
+                    <div class="history-value">${formatToken(day.total_tokens)}</div>
                     <div class="history-label">Token</div>
                     <div class="history-value" style="font-size: 14px; color: #38ef7d;">$${day.total_cost.toFixed(4)}</div>
                     <div class="history-label">花费 · ${day.request_count} 请求</div>
