@@ -532,7 +532,7 @@ func testProvider(c *gin.Context) {
 		openAIReq := map[string]interface{}{
 			"model": provider.Model,
 			"messages": []map[string]interface{}{
-				{"role": "user", "content": "hi"},
+				{"role": "user", "content": "你是什么模型"},
 			},
 			"max_tokens": 10,
 		}
@@ -544,7 +544,7 @@ func testProvider(c *gin.Context) {
 		claudeReq := map[string]interface{}{
 			"model": provider.Model,
 			"messages": []map[string]interface{}{
-				{"role": "user", "content": "hi"},
+				{"role": "user", "content": "你是什么模型"},
 			},
 			"max_tokens": 10,
 		}
@@ -672,7 +672,7 @@ func testServerKey(c *gin.Context) {
 		openAIReq := map[string]interface{}{
 			"model": provider.Model,
 			"messages": []map[string]interface{}{
-				{"role": "user", "content": "hi"},
+				{"role": "user", "content": "你是什么模型"},
 			},
 			"max_tokens": 10,
 		}
@@ -682,7 +682,7 @@ func testServerKey(c *gin.Context) {
 		claudeReq := map[string]interface{}{
 			"model": provider.Model,
 			"messages": []map[string]interface{}{
-				{"role": "user", "content": "hi"},
+				{"role": "user", "content": "你是什么模型"},
 			},
 			"max_tokens": 10,
 		}
