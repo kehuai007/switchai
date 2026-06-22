@@ -141,6 +141,8 @@ func initDB() error {
 		key_id TEXT NOT NULL,
 		date TEXT NOT NULL,
 		request_count INTEGER DEFAULT 0,
+		input_tokens INTEGER DEFAULT 0,
+		output_tokens INTEGER DEFAULT 0,
 		total_cost REAL DEFAULT 0,
 		PRIMARY KEY (key_id, date)
 	);
@@ -152,7 +154,14 @@ func initDB() error {
 	CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_records(key_id);
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	// 兼容老库：为已存在的 key_daily_stats 补充 tokens 列。
+	// ALTER ADD COLUMN 重复执行会报 "duplicate column"，故意忽略该错误。
+	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`)
+	return nil
 }
 
 func Shutdown() {
@@ -414,12 +423,13 @@ func (s *Stats) GetSummary() map[string]interface{} {
 		return keyStatsArray[i].KeyID < keyStatsArray[j].KeyID
 	})
 
-	// Get totals directly from usage_records to ensure consistency with individual key stats
+	// Get totals from provider_stats (unbounded aggregates maintained via upsert).
+	// usage_records is capped at 1000 rows so COUNT(*)/SUM on it underreports.
 	var totalInput, totalOutput, totalRequestCount int
 	var totalCost float64
-	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0) FROM usage_records`).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
+	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0) FROM provider_stats`).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
 	if err != nil {
-		logger.Error("Failed to get totals from usage_records: %v", err)
+		logger.Error("Failed to get totals from provider_stats: %v", err)
 	}
 
 	// Get recent records (last 10)
@@ -462,6 +472,7 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startNano := startOfDay.UnixNano()
+	todayDate := startOfDay.Format("2006-01-02")
 
 	// Get provider stats for today
 	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count FROM provider_stats`)
@@ -505,12 +516,13 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 		return keyStatsArray[i].KeyID < keyStatsArray[j].KeyID
 	})
 
-	// Get totals for today only
+	// Get totals for today from key_daily_stats (unbounded per-day aggregates).
+	// usage_records is capped at 1000 rows so it can't summarize a busy day.
 	var totalInput, totalOutput, totalRequestCount int
 	var totalCost float64
-	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0) FROM usage_records WHERE timestamp >= ?`, startNano).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
+	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0) FROM key_daily_stats WHERE date = ?`, todayDate).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
 	if err != nil {
-		logger.Error("Failed to get today totals from usage_records: %v", err)
+		logger.Error("Failed to get today totals from key_daily_stats: %v", err)
 	}
 
 	// Get recent records for today (last 10)
@@ -566,17 +578,16 @@ func (s *Stats) GetDailyHistory() []DailyStats {
 	for i := 0; i < 7; i++ {
 		date := now.AddDate(0, 0, -i)
 		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-		endOfDay := startOfDay.AddDate(0, 0, 1)
-		startNano := startOfDay.UnixNano()
-		endNano := endOfDay.UnixNano()
 
 		var inputTokens, outputTokens, requestCount int
 		var totalCost float64
 
+		// key_daily_stats 维护按天累计的请求数与 token 数，无 1000 行截断限制。
 		err := db.QueryRow(`
-			SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0)
-			FROM usage_records WHERE timestamp >= ? AND timestamp < ?`,
-			startNano, endNano).Scan(&inputTokens, &outputTokens, &requestCount, &totalCost)
+			SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0)
+			FROM key_daily_stats WHERE date = ?`,
+			startOfDay.Format("2006-01-02")).Scan(&inputTokens, &outputTokens, &requestCount, &totalCost)
 
 		if err != nil {
 			logger.Error("Failed to get daily stats for %s: %v", startOfDay.Format("2006-01-02"), err)

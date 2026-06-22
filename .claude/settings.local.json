@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go get:*)",
+      "Bash(timeout 5 ./switchai.exe)",
+      "Bash(timeout 5 ./switchai_test.exe)",
+      "WebFetch(domain:github.com)",
+      "mcp__MiniMax__web_search"
+    ]
+  }
+}
