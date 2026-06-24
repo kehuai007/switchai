@@ -328,6 +328,9 @@ func (c *Config) save() error {
 		}
 	}
 
+	// 清理遗留的 active_provider 行（Task 10 移除字段后无引用）
+	db.Exec("DELETE FROM config WHERE key = 'active_provider'")
+
 	return nil
 }
 
