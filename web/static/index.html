@@ -1023,7 +1023,17 @@
         }
 
         async function toggleProviderActive(id) {
-            await fetch(`/api/providers/${id}/activate`, { method: 'POST' });
+            try {
+                const res = await fetch(`/api/providers/${id}/activate`, { method: 'POST' });
+                if (!res.ok) {
+                    const error = await res.json().catch(() => ({}));
+                    alert('操作失败: ' + (error.error || '未知错误'));
+                }
+                await loadProviders();
+            } catch (err) {
+                alert('操作失败: ' + err.message);
+                await loadProviders();
+            }
         }
 
         async function deleteProvider(id) {
