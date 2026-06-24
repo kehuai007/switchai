@@ -1,32 +1,11 @@
 package proxy
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
-// 注意：resolveRouteTarget 在 Task 9 中实现，本任务仅定义接口与失败用例。
-func TestResolveRouteTarget_NoMapping(t *testing.T) {
-	t.Skip("resolveRouteTarget not implemented yet")
+// 注：resolveRouteTarget 当前依赖 config.GetConfig() 单例，难以单元测试。
+// 集成测试见 Task 21（端到端验证）。
+// 此文件保留以便未来添加不依赖全局单例的辅助测试。
+
+func TestProxyPackage_Compiles(t *testing.T) {
+	// 占位测试：保证 proxy 包始终有 _test.go 文件，go test ./proxy/... 不会报 "no test files"
 }
-
-func TestResolveRouteTarget_InactiveProvider(t *testing.T) {
-	t.Skip("resolveRouteTarget not implemented yet")
-}
-
-func TestResolveRouteTarget_Success(t *testing.T) {
-	t.Skip("resolveRouteTarget not implemented yet")
-}
-
-// routeResult 是路由决策返回的中间结构
-type routeResult struct {
-	ProviderID     string
-	ProviderModel  string
-	BaseURL        string
-	APIKey         string
-	IsOpenAIFormat bool
-}
-
-var errRouteNoMapping = errors.New("model not allowed for this key")
-var errRouteInactive = errors.New("model not supported (provider inactive)")
-var errRouteMissing = errors.New("configured provider missing")
