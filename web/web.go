@@ -105,6 +105,7 @@ func RegisterRoutes(r *gin.Engine) {
 		// WebSocket
 		api.GET("/ws", handleWebSocket)
 		api.GET("/ws/history", handleHistoryWebSocket)
+		api.GET("/ws/config", handleConfigWebSocket)
 	}
 
 	// 2FA 相关 API（不需要认证）
@@ -314,7 +315,7 @@ func addServerKey(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "key_added", key.ID)
+	broadcastConfigChange(c, "key_added", key.ID)
 	c.JSON(http.StatusOK, gin.H{"message": "密钥添加成功", "key": key})
 }
 
@@ -332,7 +333,7 @@ func updateServerKey(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "key_updated", id)
+	broadcastConfigChange(c, "key_updated", id)
 	c.JSON(http.StatusOK, gin.H{"message": "密钥更新成功"})
 }
 
@@ -344,7 +345,7 @@ func deleteServerKey(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "key_deleted", id)
+	broadcastConfigChange(c, "key_deleted", id)
 	c.JSON(http.StatusOK, gin.H{"message": "密钥删除成功"})
 }
 
@@ -469,7 +470,7 @@ func addProvider(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "provider_added", provider.ID)
+	broadcastConfigChange(c, "provider_added", provider.ID)
 	c.JSON(http.StatusOK, provider)
 }
 
@@ -496,7 +497,7 @@ func updateProvider(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "provider_updated", id)
+	broadcastConfigChange(c, "provider_updated", id)
 	c.JSON(http.StatusOK, provider)
 }
 
@@ -515,7 +516,7 @@ func deleteProvider(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// TODO(task-16): broadcastConfigChange(c, "provider_deleted", id)
+	broadcastConfigChange(c, "provider_deleted", id)
 	c.JSON(http.StatusOK, gin.H{"message": "Provider deleted"})
 }
 
@@ -535,7 +536,7 @@ func activateProvider(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "provider_activated", id)
+	broadcastConfigChange(c, "provider_activated", id)
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Provider activation toggled",
 		"is_active": provider.IsActive,
@@ -906,7 +907,7 @@ func addKeyMapping(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "mapping_added", created.ID)
+	broadcastConfigChange(c, "mapping_added", created.ID)
 	c.JSON(http.StatusOK, created)
 }
 
@@ -933,7 +934,7 @@ func updateKeyMapping(c *gin.Context) {
 		return
 	}
 
-	// TODO(task-16): broadcastConfigChange(c, "mapping_updated", mappingID)
+	broadcastConfigChange(c, "mapping_updated", mappingID)
 	c.JSON(http.StatusOK, gin.H{"message": "mapping updated"})
 }
 
@@ -945,6 +946,6 @@ func deleteKeyMapping(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// TODO(task-16): broadcastConfigChange(c, "mapping_deleted", mappingID)
+	broadcastConfigChange(c, "mapping_deleted", mappingID)
 	c.JSON(http.StatusOK, gin.H{"message": "mapping deleted"})
 }
