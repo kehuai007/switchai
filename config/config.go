@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"switchai/appdata"
@@ -49,17 +50,27 @@ func (p *Provider) GetSupportedModels() []string {
 	return out
 }
 
+type ModelMapping struct {
+	ID            string `json:"id"`
+	ServerKeyID   string `json:"server_key_id"`
+	UserModel     string `json:"user_model"`
+	ProviderID    string `json:"provider_id"`
+	ProviderModel string `json:"provider_model"`
+	CreatedAt     string `json:"created_at"`
+}
+
 type ServerKey struct {
-	ID               string  `json:"id"`        // 密钥ID
-	Key              string  `json:"key"`        // 密钥值 sk-xxxx
-	Remark           string  `json:"remark"`     // 备注
-	IsEnabled        bool    `json:"is_enabled"` // 是否启用
-	CreatedAt        string  `json:"created_at"` // 创建时间
-	Order            int     `json:"order"`      // 排序序号
-	DailyReqLimit    int     `json:"daily_req_limit"`    // 每日请求次数限额 (0=不限)
-	TotalReqLimit    int     `json:"total_req_limit"`    // 总请求次数限额 (0=不限)
-	DailyCostLimit   float64 `json:"daily_cost_limit"`   // 每日花费限额 (0=不限)
-	TotalCostLimit   float64 `json:"total_cost_limit"`   // 总花费限额 (0=不限)
+	ID               string         `json:"id"`               // 密钥ID
+	Key              string         `json:"key"`              // 密钥值 sk-xxxx
+	Remark           string         `json:"remark"`           // 备注
+	IsEnabled        bool           `json:"is_enabled"`       // 是否启用
+	CreatedAt        string         `json:"created_at"`       // 创建时间
+	Order            int            `json:"order"`            // 排序序号
+	DailyReqLimit    int            `json:"daily_req_limit"`  // 每日请求次数限额 (0=不限)
+	TotalReqLimit    int            `json:"total_req_limit"`  // 总请求次数限额 (0=不限)
+	DailyCostLimit   float64        `json:"daily_cost_limit"` // 每日花费限额 (0=不限)
+	TotalCostLimit   float64        `json:"total_cost_limit"` // 总花费限额 (0=不限)
+	Mappings         []ModelMapping `json:"mappings"`
 }
 
 type Config struct {
@@ -723,4 +734,88 @@ func Shutdown() {
 	if db != nil {
 		db.Close()
 	}
+}
+
+// LoadMappingsForKey 返回指定 key 的所有 mappings
+func (c *Config) LoadMappingsForKey(keyID string) []ModelMapping {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	rows, err := db.Query("SELECT id, server_key_id, user_model, provider_id, provider_model, created_at FROM model_mappings WHERE server_key_id = ? ORDER BY created_at", keyID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []ModelMapping
+	for rows.Next() {
+		var m ModelMapping
+		if err := rows.Scan(&m.ID, &m.ServerKeyID, &m.UserModel, &m.ProviderID, &m.ProviderModel, &m.CreatedAt); err != nil {
+			return out
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// AddMapping 添加一条映射；UNIQUE 冲突返回 error
+func (c *Config) AddMapping(keyID string, m ModelMapping) (ModelMapping, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	m.ID = uuid.New().String()
+	m.ServerKeyID = keyID
+	if m.CreatedAt == "" {
+		m.CreatedAt = time.Now().Format(time.RFC3339)
+	}
+
+	_, err := db.Exec(
+		"INSERT INTO model_mappings (id, server_key_id, user_model, provider_id, provider_model, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		m.ID, m.ServerKeyID, m.UserModel, m.ProviderID, m.ProviderModel, m.CreatedAt,
+	)
+	if err != nil {
+		return ModelMapping{}, err
+	}
+	return m, nil
+}
+
+// UpdateMapping 更新一条映射
+func (c *Config) UpdateMapping(keyID, mappingID string, m ModelMapping) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	res, err := db.Exec(
+		"UPDATE model_mappings SET user_model = ?, provider_id = ?, provider_model = ? WHERE id = ? AND server_key_id = ?",
+		m.UserModel, m.ProviderID, m.ProviderModel, mappingID, keyID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("mapping not found")
+	}
+	return nil
+}
+
+// DeleteMapping 删除一条映射
+func (c *Config) DeleteMapping(keyID, mappingID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, err := db.Exec("DELETE FROM model_mappings WHERE id = ? AND server_key_id = ?", mappingID, keyID)
+	return err
+}
+
+// HasMappingsForProvider 返回指定 provider_id 是否被任意 mapping 引用
+func (c *Config) HasMappingsForProvider(providerID string) (bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var n int
+	err := db.QueryRow("SELECT COUNT(*) FROM model_mappings WHERE provider_id = ?", providerID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
