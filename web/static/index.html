@@ -366,6 +366,22 @@
                     </label>
                 </div>
                 <div style="border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px;">
+                    <h4 style="margin-bottom: 10px; color: #4a5568;">模型映射</h4>
+                    <p style="font-size: 12px; color: #666; margin-bottom: 10px;">为每个用户侧模型名指定目标 provider 和实际模型名。</p>
+                    <table id="mappingsTable" style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: #f7fafc;">
+                                <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">用户模型名</th>
+                                <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">API服务商</th>
+                                <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">服务商模型</th>
+                                <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mappingsTbody"></tbody>
+                    </table>
+                    <button type="button" class="btn-primary" onclick="addMappingRow()" style="margin-top: 10px;">+ 添加映射</button>
+                </div>
+                <div style="border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px;">
                     <h4 style="margin-bottom: 10px; color: #4a5568;">限额设置 (0 = 不限)</h4>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                         <div class="form-group">
@@ -392,6 +408,8 @@
                         <select id="editKeyProviderType" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
                             <option value="anthropic">Anthropic 接口</option>
                             <option value="openai">OpenAI 接口</option>
+                        </select>
+                        <select id="editKeyTestModel" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; flex: 1;">
                         </select>
                         <button type="button" class="btn-warning" onclick="testServerKey()">测试连接</button>
                     </div>
@@ -779,6 +797,8 @@
             document.getElementById('editKeyTotalReqLimit').value = key.total_req_limit || 0;
             document.getElementById('editKeyDailyCostLimit').value = key.daily_cost_limit || 0;
             document.getElementById('editKeyTotalCostLimit').value = key.total_cost_limit || 0;
+            renderMappings(key.mappings || []);
+            populateTestModelDropdown();
 
             document.getElementById('editKeyModal').classList.add('show');
         }
@@ -811,6 +831,72 @@
         function hideEditKeyModal() {
             document.getElementById('editKeyModal').classList.remove('show');
             document.getElementById('editKeyForm').reset();
+        }
+
+        function renderMappings(mappings) {
+            const tbody = document.getElementById('mappingsTbody');
+            tbody.innerHTML = '';
+            (mappings || []).forEach(m => addMappingRow(m));
+        }
+
+        function addMappingRow(existing) {
+            const tbody = document.getElementById('mappingsTbody');
+            const tr = document.createElement('tr');
+
+            const userModelVal = existing ? existing.user_model : '';
+            const providerIdVal = existing ? existing.provider_id : '';
+            const providerModelVal = existing ? existing.provider_model : '';
+
+            tr.innerHTML = `
+                <td style="padding: 6px; border: 1px solid #e2e8f0;">
+                    <input type="text" class="mapping-user-model" value="${userModelVal}" placeholder="claude-sonnet-4-5" style="width: 100%; padding: 6px;">
+                </td>
+                <td style="padding: 6px; border: 1px solid #e2e8f0;">
+                    <select class="mapping-provider-id" style="width: 100%; padding: 6px;">
+                        <option value="">-- 选择 provider --</option>
+                        ${providers.map(p => `<option value="${p.id}" ${p.id === providerIdVal ? 'selected' : ''}>${p.name}</option>`).join('')}
+                    </select>
+                </td>
+                <td style="padding: 6px; border: 1px solid #e2e8f0;">
+                    <select class="mapping-provider-model" style="width: 100%; padding: 6px;">
+                        ${renderProviderModelOptions(providerIdVal, providerModelVal)}
+                    </select>
+                </td>
+                <td style="padding: 6px; border: 1px solid #e2e8f0;">
+                    <button type="button" class="btn-danger" onclick="this.closest('tr').remove()">删除</button>
+                </td>
+            `;
+
+            tr.querySelector('.mapping-provider-id').addEventListener('change', function() {
+                const modelSelect = tr.querySelector('.mapping-provider-model');
+                modelSelect.innerHTML = renderProviderModelOptions(this.value, '');
+            });
+
+            tbody.appendChild(tr);
+        }
+
+        function renderProviderModelOptions(providerId, selected) {
+            if (!providerId) return '';
+            const p = providers.find(x => x.id === providerId);
+            if (!p) return '';
+            const models = (p.model || '').split(';').map(s => s.trim()).filter(s => s);
+            return models.map(m => `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`).join('');
+        }
+
+        function populateTestModelDropdown() {
+            const sel = document.getElementById('editKeyTestModel');
+            const key = serverKeys.find(k => k.id === document.getElementById('editKeyId').value);
+            if (!key || !key.mappings || key.mappings.length === 0) {
+                sel.innerHTML = '<option value="">该 key 暂无可测试的映射</option>';
+                sel.disabled = true;
+                return;
+            }
+            sel.disabled = false;
+            sel.innerHTML = key.mappings.map(m => {
+                const p = providers.find(x => x.id === m.provider_id);
+                const providerName = p ? p.name : '?';
+                return `<option value="${m.provider_id}|${m.provider_model}">${providerName}: ${m.provider_model}</option>`;
+            }).join('');
         }
 
         function connectWebSocket() {
@@ -1125,6 +1211,12 @@
         async function testServerKey() {
             const keyId = document.getElementById('editKeyId').value;
             const providerType = document.getElementById('editKeyProviderType').value;
+            const modelVal = document.getElementById('editKeyTestModel').value;
+            if (!modelVal || !modelVal.includes('|')) {
+                alert('请选择测试模型');
+                return;
+            }
+            const [providerId, providerModel] = modelVal.split('|');
             const resultEl = document.getElementById('editKeyTestResult');
 
             resultEl.classList.remove('hidden');
@@ -1136,7 +1228,7 @@
                 const res = await fetch(`/api/server-keys/${keyId}/test`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider_type: providerType })
+                    body: JSON.stringify({ provider_type: providerType, provider_id: providerId, provider_model: providerModel })
                 });
 
                 const data = await res.json();
@@ -1288,6 +1380,7 @@
             const id = formData.get('id');
             const key = serverKeys.find(k => k.id === id);
             if (!key) return;
+            const existingMappings = key.mappings || [];
 
             const data = {
                 remark: formData.get('remark') || '',
@@ -1309,6 +1402,23 @@
                     const error = await res.json();
                     alert('更新失败: ' + (error.error || '未知错误'));
                     return;
+                }
+
+                // Sync mappings: delete all existing, then add current rows
+                for (const m of existingMappings) {
+                    await fetch(`/api/server-keys/${id}/mappings/${m.id}`, { method: 'DELETE' });
+                }
+                const rows = document.querySelectorAll('#mappingsTbody tr');
+                for (const row of rows) {
+                    const userModel = row.querySelector('.mapping-user-model').value.trim();
+                    const providerId = row.querySelector('.mapping-provider-id').value;
+                    const providerModel = row.querySelector('.mapping-provider-model').value;
+                    if (!userModel || !providerId || !providerModel) continue;
+                    await fetch(`/api/server-keys/${id}/mappings`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_model: userModel, provider_id: providerId, provider_model: providerModel }),
+                    });
                 }
 
                 hideEditKeyModal();
