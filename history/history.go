@@ -25,6 +25,7 @@ type RequestRecord struct {
 	KeyID           string      `json:"key_id"`
 	Provider        string      `json:"provider"`
 	Model           string      `json:"model"`
+	UserModel       string      `json:"user_model"`
 	StatusCode      int         `json:"status_code"`
 	Duration        int64       `json:"duration_ms"`
 	RequestBody     string      `json:"request_body"`
@@ -98,7 +99,7 @@ func loadHomeCache() {
 	defer homeCacheMu.Unlock()
 
 	rows, err := db.Query(`
-		SELECT id, timestamp, method, path, client_ip, key_id, provider, model,
+		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
 			request_size, response_size, input_tokens, output_tokens, total_tokens, cost
 		FROM history ORDER BY timestamp DESC LIMIT ?`, homeCacheSize)
@@ -113,13 +114,13 @@ func loadHomeCache() {
 		var r RequestRecord
 		var timestamp int64
 		var reqHeaders, respHeaders sql.NullString
-		var method, path, clientIP, keyID, provider, model sql.NullString
+		var method, path, clientIP, keyID, provider, model, userModel sql.NullString
 		var statusCode, durationMs, inputTokens, outputTokens, totalTokens sql.NullInt64
 		var requestBody, responseBody sql.NullString
 		var requestSize, responseSize sql.NullInt64
 		var cost sql.NullFloat64
 
-		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model,
+		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 			&statusCode, &durationMs, &requestBody, &responseBody, &reqHeaders, &respHeaders,
 			&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost)
 		if err != nil {
@@ -134,6 +135,7 @@ func loadHomeCache() {
 		r.KeyID = keyID.String
 		r.Provider = provider.String
 		r.Model = model.String
+		r.UserModel = userModel.String
 		r.StatusCode = int(statusCode.Int64)
 		r.Duration = durationMs.Int64
 		r.RequestBody = requestBody.String
@@ -171,6 +173,7 @@ func initDB() error {
 		key_id TEXT,
 		provider TEXT,
 		model TEXT,
+		user_model TEXT DEFAULT '',
 		status_code INTEGER,
 		duration_ms INTEGER,
 		request_body TEXT,
@@ -187,7 +190,14 @@ func initDB() error {
 	CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp DESC);
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add user_model column if it doesn't exist
+	db.Exec("ALTER TABLE history ADD COLUMN user_model TEXT DEFAULT ''")
+
+	return nil
 }
 
 // cleanupOldRecords 删除超过1000条的旧数据
@@ -307,12 +317,12 @@ func AddRecord(record RequestRecord) {
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO history (id, timestamp, method, path, client_ip, key_id, provider, model,
+		INSERT INTO history (id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
 			request_size, response_size, input_tokens, output_tokens, total_tokens, cost)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.Timestamp.UnixNano(), record.Method, record.Path, record.ClientIP,
-		record.KeyID, record.Provider, record.Model, record.StatusCode, record.Duration,
+		record.KeyID, record.Provider, record.Model, record.UserModel, record.StatusCode, record.Duration,
 		record.RequestBody, record.ResponseBody, reqHeaders, respHeaders,
 		record.RequestSize, record.ResponseSize, record.InputTokens, record.OutputTokens,
 		record.TotalTokens, record.Cost)
@@ -376,6 +386,7 @@ type RecordSummary struct {
 	KeyID       string    `json:"key_id"`
 	Provider    string    `json:"provider"`
 	Model       string    `json:"model"`
+	UserModel   string    `json:"user_model"`
 	StatusCode  int       `json:"status_code"`
 	Duration    int64     `json:"duration_ms"`
 	RequestSize int64     `json:"request_size"`
@@ -404,7 +415,7 @@ func GetRecords(page, pageSize int) ([]RequestRecord, int) {
 
 	offset := (page - 1) * pageSize
 	rows, err := db.Query(`
-		SELECT id, timestamp, method, path, client_ip, key_id, provider, model,
+		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
 			request_size, response_size, input_tokens, output_tokens, total_tokens, cost
 		FROM history ORDER BY timestamp DESC LIMIT ? OFFSET ?`, pageSize, offset)
@@ -419,13 +430,13 @@ func GetRecords(page, pageSize int) ([]RequestRecord, int) {
 		var r RequestRecord
 		var timestamp int64
 		var reqHeaders, respHeaders sql.NullString
-		var method, path, clientIP, keyID, provider, model sql.NullString
+		var method, path, clientIP, keyID, provider, model, userModel sql.NullString
 		var statusCode, durationMs, inputTokens, outputTokens, totalTokens sql.NullInt64
 		var requestBody, responseBody sql.NullString
 		var requestSize, responseSize sql.NullInt64
 		var cost sql.NullFloat64
 
-		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model,
+		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 			&statusCode, &durationMs, &requestBody, &responseBody, &reqHeaders, &respHeaders,
 			&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost)
 		if err != nil {
@@ -440,6 +451,7 @@ func GetRecords(page, pageSize int) ([]RequestRecord, int) {
 		r.KeyID = keyID.String
 		r.Provider = provider.String
 		r.Model = model.String
+		r.UserModel = userModel.String
 		r.StatusCode = int(statusCode.Int64)
 		r.Duration = durationMs.Int64
 		r.RequestBody = requestBody.String
@@ -489,6 +501,7 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 				KeyID:        r.KeyID,
 				Provider:     r.Provider,
 				Model:        r.Model,
+				UserModel:    r.UserModel,
 				StatusCode:   r.StatusCode,
 				Duration:     r.Duration,
 				RequestSize:  r.RequestSize,
@@ -512,7 +525,7 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 
 	offset := (page - 1) * pageSize
 	rows, err := db.Query(`
-		SELECT id, timestamp, method, path, client_ip, key_id, provider, model,
+		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_size, response_size,
 			input_tokens, output_tokens, total_tokens, cost
 		FROM history ORDER BY timestamp DESC LIMIT ? OFFSET ?`, pageSize, offset)
@@ -526,12 +539,12 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 	for rows.Next() {
 		var r RecordSummary
 		var timestamp int64
-		var method, path, clientIP, keyID, provider, model sql.NullString
+		var method, path, clientIP, keyID, provider, model, userModel sql.NullString
 		var statusCode, durationMs, inputTokens, outputTokens, totalTokens sql.NullInt64
 		var requestSize, responseSize sql.NullInt64
 		var cost sql.NullFloat64
 
-		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model,
+		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 			&statusCode, &durationMs, &requestSize, &responseSize,
 			&inputTokens, &outputTokens, &totalTokens, &cost)
 		if err != nil {
@@ -546,6 +559,7 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 		r.KeyID = keyID.String
 		r.Provider = provider.String
 		r.Model = model.String
+		r.UserModel = userModel.String
 		r.StatusCode = int(statusCode.Int64)
 		r.Duration = durationMs.Int64
 		r.RequestSize = requestSize.Int64
@@ -565,17 +579,17 @@ func GetRecord(id string) *RequestRecord {
 	var r RequestRecord
 	var timestamp int64
 	var reqHeaders, respHeaders sql.NullString
-	var method, path, clientIP, keyID, provider, model sql.NullString
+	var method, path, clientIP, keyID, provider, model, userModel sql.NullString
 	var statusCode, durationMs, inputTokens, outputTokens, totalTokens sql.NullInt64
 	var requestBody, responseBody sql.NullString
 	var requestSize, responseSize sql.NullInt64
 	var cost sql.NullFloat64
 
 	err := db.QueryRow(`
-		SELECT id, timestamp, method, path, client_ip, key_id, provider, model,
+		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
 			request_size, response_size, input_tokens, output_tokens, total_tokens, cost
-		FROM history WHERE id = ?`, id).Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model,
+		FROM history WHERE id = ?`, id).Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 		&statusCode, &durationMs, &requestBody, &responseBody, &reqHeaders, &respHeaders,
 		&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost)
 	if err != nil {
@@ -589,6 +603,7 @@ func GetRecord(id string) *RequestRecord {
 	r.KeyID = keyID.String
 	r.Provider = provider.String
 	r.Model = model.String
+	r.UserModel = userModel.String
 	r.StatusCode = int(statusCode.Int64)
 	r.Duration = durationMs.Int64
 	r.RequestBody = requestBody.String
