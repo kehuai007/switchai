@@ -105,32 +105,14 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 	return lastResp, lastErr
 }
 
-// resolveRouteTarget 根据 keyID + userModel 解析出真正的目标 provider
-// 返回 (provider, provider_model, error)
+// resolveRouteTarget 根据 keyID + userModel 解析出真正的目标 provider 与其下模型名
+// 返回 (*Provider, provider_model, error)
 func resolveRouteTarget(keyID, userModel string) (*config.Provider, string, error) {
-	_, provider, err := config.GetConfig().GetMappingForRouting(keyID, userModel)
+	mapping, provider, err := config.GetConfig().GetMappingForRouting(keyID, userModel)
 	if err != nil {
 		return nil, "", err
 	}
-	// 再次查表取 provider_model（避免在调用方再读 DB）
-	for _, k := range config.GetConfig().GetServerKeys() {
-		if k.ID != keyID {
-			continue
-		}
-		for _, m := range k.Mappings {
-			if m.UserModel == userModel && m.ProviderID == provider.ID {
-				return provider, m.ProviderModel, nil
-			}
-		}
-	}
-	// fallback：直接查 DB
-	rows := config.GetConfig().LoadMappingsForKey(keyID)
-	for _, m := range rows {
-		if m.UserModel == userModel {
-			return provider, m.ProviderModel, nil
-		}
-	}
-	return provider, "", nil
+	return provider, mapping.ProviderModel, nil
 }
 
 func proxyHandler(c *gin.Context) {
