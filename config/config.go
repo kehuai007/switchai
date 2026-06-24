@@ -256,6 +256,14 @@ func (c *Config) Load() error {
 		c.ServerKeys = append(c.ServerKeys, k)
 	}
 
+	// 加载 mappings（合并到对应 key）
+	if c.ServerKeys == nil {
+		c.ServerKeys = []ServerKey{}
+	}
+	for i := range c.ServerKeys {
+		c.ServerKeys[i].Mappings = c.LoadMappingsForKey(c.ServerKeys[i].ID)
+	}
+
 	return nil
 }
 
