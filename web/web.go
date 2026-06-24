@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"switchai/config"
 	"switchai/history"
 	"switchai/stats"
@@ -890,8 +891,11 @@ func addKeyMapping(c *gin.Context) {
 
 	created, err := config.GetConfig().AddMapping(keyID, m)
 	if err != nil {
-		// UNIQUE 冲突
-		c.JSON(http.StatusConflict, gin.H{"error": "duplicate user model name"})
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			c.JSON(http.StatusConflict, gin.H{"error": "duplicate user model name"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
