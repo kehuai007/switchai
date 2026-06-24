@@ -211,6 +211,7 @@ func proxyHandler(c *gin.Context) {
 	var requestBody map[string]interface{}
 	isStream := false
 	requestedModel = "unknown"
+	actualModel := providerModel
 	modifiedRequestBody := string(bodyBytes) // 用于历史记录的请求体
 
 	if len(bodyBytes) > 0 && json.Valid(bodyBytes) {
@@ -220,16 +221,17 @@ func proxyHandler(c *gin.Context) {
 				isStream = true
 			}
 
-			// 获取请求的模型名称
+			// 获取用户原始模型名（用于日志/历史）
 			if model, ok := requestBody["model"].(string); ok {
 				requestedModel = model
 				logger.Info("Original request model: %s", model)
-
-				// 使用映射解析出的 provider_model 替换请求中的模型
-				requestBody["model"] = providerModel
-				requestedModel = providerModel
-				logger.Info("Replaced with provider model: %s", providerModel)
 			}
+
+			// 使用映射解析出的 provider_model 替换请求中的模型
+			// actualModel 用于 cost 计算，requestedModel 保留用户原始输入（用于 history.user_model）
+			requestBody["model"] = providerModel
+			actualModel = providerModel
+			logger.Info("Replaced with provider model: %s", providerModel)
 
 			// 自动格式转换：如果请求格式与提供商格式不匹配，需要转换
 			if provider.IsOpenAIFormat && !isIncomingOpenAIFormat {
@@ -312,16 +314,16 @@ func proxyHandler(c *gin.Context) {
 
 	// 处理流式响应
 	if isStream {
-		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
+		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
 		return
 	}
 
 	// 处理非流式响应
-	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
+	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
 }
 
 // handleStreamResponse 处理流式响应（SSE）
-func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
+func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, actualModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
 	var firstTokenTime time.Time
 
 	c.Status(resp.StatusCode)
@@ -532,9 +534,9 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		timeToFirst = firstTokenTime.Sub(startTime).Milliseconds()
 	}
 
-	// 如果响应中没有模型信息，使用请求中的模型
+	// 如果响应中没有模型信息，使用实际调用的模型（provider_model）用于 cost 计算
 	if model == "" {
-		model = requestedModel
+		model = actualModel
 	}
 
 	// 如果没有获取到模型信息，使用默认值
@@ -603,7 +605,7 @@ func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) 
 }
 
 // handleNonStreamResponse 处理非流式响应
-func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
+func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, actualModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("❌ 读取响应体失败: %v", err)
@@ -634,7 +636,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	}
 	logger.Info("📄 响应体预览: %s", string(respPreview))
 
-	model := requestedModel
+	model := actualModel
 	var inputTokens, outputTokens int
 	var cost float64
 
