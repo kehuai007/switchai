@@ -729,13 +729,6 @@ func (c *Config) ResetTOTP() error {
 	return c.save()
 }
 
-// Shutdown 关闭数据库连接
-func Shutdown() {
-	if db != nil {
-		db.Close()
-	}
-}
-
 // LoadMappingsForKey 返回指定 key 的所有 mappings
 func (c *Config) LoadMappingsForKey(keyID string) []ModelMapping {
 	c.mu.RLock()
@@ -818,4 +811,11 @@ func (c *Config) HasMappingsForProvider(providerID string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// Shutdown 关闭数据库连接
+func Shutdown() {
+	if db != nil {
+		db.Close()
+	}
 }
