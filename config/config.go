@@ -147,6 +147,8 @@ func initDB() error {
 		daily_cost_limit REAL DEFAULT 0,
 		total_cost_limit REAL DEFAULT 0
 	);
+	-- model_mappings.provider_id 无 FK 约束：provider 删除由 web 层拦截（见 web.deleteProvider）
+	-- 避免级联删除 mappings，让用户能感知到冲突
 	CREATE TABLE IF NOT EXISTS model_mappings (
 		id TEXT PRIMARY KEY,
 		server_key_id TEXT NOT NULL,
@@ -157,7 +159,6 @@ func initDB() error {
 		UNIQUE(server_key_id, user_model),
 		FOREIGN KEY (server_key_id) REFERENCES server_keys(id) ON DELETE CASCADE
 	);
-	CREATE INDEX IF NOT EXISTS idx_model_mappings_key ON model_mappings(server_key_id);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
