@@ -432,6 +432,46 @@
         let totpSetupComplete = false;
         let serverTimeOffset = 0;
 
+        // 客户端标识：用于服务端识别变更来源标签，避免回声刷新
+        let clientToken = localStorage.getItem('switchai_client_token');
+        if (!clientToken) {
+            clientToken = crypto.randomUUID();
+            localStorage.setItem('switchai_client_token', clientToken);
+        }
+        let configWs = null;
+
+        // 配置变更 WebSocket：接收 provider/key/mapping 变更广播，自动刷新
+        function connectConfigWs() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            configWs = new WebSocket(`${proto}//${location.host}/api/ws/config`);
+            configWs.onmessage = (e) => {
+                try {
+                    const ev = JSON.parse(e.data);
+                    if (ev.source === clientToken) return;
+                    if (ev.type && ev.type.startsWith('provider')) loadProviders();
+                    if (ev.type && (ev.type.startsWith('key') || ev.type.startsWith('mapping'))) loadServerKeys();
+                } catch (err) {
+                    console.error('config ws parse error', err);
+                }
+            };
+            configWs.onclose = () => {
+                setTimeout(connectConfigWs, 2000);
+            };
+            configWs.onerror = (err) => console.error('config ws error', err);
+        }
+
+        // 自动给 /api/ 请求注入 X-Client-Token，便于服务端识别触发源
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options = {}) {
+            options = options || {};
+            options.headers = options.headers || {};
+            const urlStr = url.toString();
+            if (urlStr.startsWith('/api/') || urlStr.startsWith('api/')) {
+                options.headers['X-Client-Token'] = clientToken;
+            }
+            return originalFetch(url, options);
+        };
+
         // 检查登录状态
         async function checkAuth() {
             try {
@@ -463,6 +503,7 @@
             document.getElementById('loginPage').classList.add('hidden');
             document.getElementById('mainContent').classList.remove('hidden');
             stopServerTimeTick();
+            connectConfigWs();
         }
 
         // 检查 TOTP 状态
