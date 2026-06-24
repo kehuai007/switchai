@@ -452,6 +452,9 @@ func addProvider(c *gin.Context) {
 
 	provider.ID = uuid.New().String()
 	provider.CreatedAt = time.Now().Format(time.RFC3339)
+	if !provider.IsActive {
+		provider.IsActive = true // 新建默认激活
+	}
 
 	if err := config.GetConfig().AddProvider(provider); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -475,6 +478,7 @@ func updateProvider(c *gin.Context) {
 		oldProvider := config.GetConfig().GetProviderByID(id)
 		if oldProvider != nil {
 			provider.APIKey = oldProvider.APIKey
+			provider.IsActive = oldProvider.IsActive // 保留原激活状态
 		}
 	}
 
