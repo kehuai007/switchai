@@ -32,8 +32,8 @@ type Provider struct {
 	IsOpenAIFormat bool   `json:"is_openai_format"` // 标识是否为 OpenAI 格式的 API
 }
 
-// GetSupportedModels 解析 Model 字段（"X;Y;Z" 或单值），返回去重、trim 后的模型名列表。
-// 空字符串返回 nil（provider 未声明任何模型）。
+// GetSupportedModels 解析 Model 字段（"X;Y;Z" 或单值），返回 trim 并过滤空段后的模型名列表。
+// 空字符串返回 nil（provider 未声明任何模型）。不去重 — 重复声明视为调用方责任。
 func (p *Provider) GetSupportedModels() []string {
 	if p.Model == "" {
 		return nil
