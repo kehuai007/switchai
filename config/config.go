@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"sort"
+	"strings"
 	"switchai/appdata"
 	"sync"
 	"time"
@@ -29,6 +30,23 @@ type Provider struct {
 	CreatedAt      string `json:"created_at"`
 	Order          int    `json:"order"`
 	IsOpenAIFormat bool   `json:"is_openai_format"` // 标识是否为 OpenAI 格式的 API
+}
+
+// GetSupportedModels 解析 Model 字段（"X;Y;Z" 或单值），返回去重、trim 后的模型名列表。
+// 空字符串返回 nil（provider 未声明任何模型）。
+func (p *Provider) GetSupportedModels() []string {
+	if p.Model == "" {
+		return nil
+	}
+	parts := strings.Split(p.Model, ";")
+	out := make([]string, 0, len(parts))
+	for _, s := range parts {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 type ServerKey struct {
