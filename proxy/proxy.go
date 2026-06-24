@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -178,7 +179,7 @@ func proxyHandler(c *gin.Context) {
 	provider, providerModel, err := resolveRouteTarget(keyID, userModel)
 	if err != nil {
 		status := http.StatusForbidden
-		if strings.Contains(err.Error(), "configured provider missing") {
+		if errors.Is(err, config.ErrConfiguredProviderMissing) {
 			status = http.StatusInternalServerError
 		}
 		c.JSON(status, gin.H{"error": err.Error()})

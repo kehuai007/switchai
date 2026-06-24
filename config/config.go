@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -97,6 +98,10 @@ func IsSkipAuth() bool {
 
 var cfg *Config
 var db *sql.DB
+
+// ErrConfiguredProviderMissing is returned when a mapping references a provider_id
+// that doesn't exist in the providers list. Use errors.Is to detect.
+var ErrConfiguredProviderMissing = errors.New("configured provider missing")
 
 // getDBPath 返回数据库文件路径
 func getDBPath() string {
@@ -733,7 +738,7 @@ func (c *Config) GetMappingForRouting(keyID, userModel string) (*ModelMapping, *
 			return &m, &c.Providers[i], nil
 		}
 	}
-	return nil, nil, fmt.Errorf("configured provider missing")
+	return nil, nil, ErrConfiguredProviderMissing
 }
 
 // AddMapping 添加一条映射；UNIQUE 冲突返回 error
