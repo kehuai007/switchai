@@ -171,8 +171,11 @@ func proxyHandler(c *gin.Context) {
 		}
 	}
 
+	// userModel 保留用户原始请求的模型名（mapping 之前的值），用于历史记录
+	userModel := requestedModel
+
 	// 严格模式：通过 key + user_model 路由
-	provider, providerModel, err := resolveRouteTarget(keyID, requestedModel)
+	provider, providerModel, err := resolveRouteTarget(keyID, userModel)
 	if err != nil {
 		status := http.StatusForbidden
 		if strings.Contains(err.Error(), "configured provider missing") {
@@ -308,16 +311,16 @@ func proxyHandler(c *gin.Context) {
 
 	// 处理流式响应
 	if isStream {
-		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, keyID, clientIP, isIncomingOpenAIFormat)
+		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
 		return
 	}
 
 	// 处理非流式响应
-	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, keyID, clientIP, isIncomingOpenAIFormat)
+	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
 }
 
 // handleStreamResponse 处理流式响应（SSE）
-func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
+func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
 	var firstTokenTime time.Time
 
 	c.Status(resp.StatusCode)
@@ -553,6 +556,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		KeyID:           keyID,
 		Provider:        provider.Name,
 		Model:           model,
+		UserModel:       userModel,
 		StatusCode:      resp.StatusCode,
 		Duration:        duration,
 		RequestBody:     requestBody,
@@ -598,7 +602,7 @@ func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) 
 }
 
 // handleNonStreamResponse 处理非流式响应
-func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
+func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("❌ 读取响应体失败: %v", err)
@@ -681,6 +685,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 		KeyID:           keyID,
 		Provider:        provider.Name,
 		Model:           model,
+		UserModel:       userModel,
 		StatusCode:      resp.StatusCode,
 		Duration:        duration,
 		RequestBody:     requestBody,
