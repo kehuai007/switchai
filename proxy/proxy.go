@@ -105,6 +105,34 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 	return lastResp, lastErr
 }
 
+// resolveRouteTarget 根据 keyID + userModel 解析出真正的目标 provider
+// 返回 (provider, provider_model, error)
+func resolveRouteTarget(keyID, userModel string) (*config.Provider, string, error) {
+	_, provider, err := config.GetConfig().GetMappingForRouting(keyID, userModel)
+	if err != nil {
+		return nil, "", err
+	}
+	// 再次查表取 provider_model（避免在调用方再读 DB）
+	for _, k := range config.GetConfig().GetServerKeys() {
+		if k.ID != keyID {
+			continue
+		}
+		for _, m := range k.Mappings {
+			if m.UserModel == userModel && m.ProviderID == provider.ID {
+				return provider, m.ProviderModel, nil
+			}
+		}
+	}
+	// fallback：直接查 DB
+	rows := config.GetConfig().LoadMappingsForKey(keyID)
+	for _, m := range rows {
+		if m.UserModel == userModel {
+			return provider, m.ProviderModel, nil
+		}
+	}
+	return provider, "", nil
+}
+
 func proxyHandler(c *gin.Context) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
@@ -144,12 +172,31 @@ func proxyHandler(c *gin.Context) {
 	// 检测请求格式：Anthropic 使用 /v1/messages，OpenAI 使用 /v1/chat/completions
 	isIncomingOpenAIFormat := strings.HasPrefix(c.Request.URL.Path, "/v1/chat")
 
-	// 根据请求格式选择对应的提供商，而不是总是使用活跃的提供商
-	provider := config.GetConfig().GetProviderByFormat(isIncomingOpenAIFormat)
-	if provider == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "No active provider configured",
-		})
+	// 解析请求体以取出 user model（先 read body）
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	var requestedModel string
+	if len(bodyBytes) > 0 {
+		var probe map[string]interface{}
+		if json.Unmarshal(bodyBytes, &probe) == nil {
+			if m, ok := probe["model"].(string); ok {
+				requestedModel = m
+			}
+		}
+	}
+
+	// 严格模式：通过 key + user_model 路由
+	provider, providerModel, err := resolveRouteTarget(keyID, requestedModel)
+	if err != nil {
+		status := http.StatusForbidden
+		if strings.Contains(err.Error(), "configured provider missing") {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -174,17 +221,10 @@ func proxyHandler(c *gin.Context) {
 	}
 	logger.Info("📡 代理转发 - Provider: %s, BaseURL: %s, Path: %s → Target: %s", provider.Name, provider.BaseURL, c.Request.URL.Path, targetURL)
 
-	// 读取请求体
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
-		return
-	}
-
 	// 解析请求体以检查是否为流式请求，并替换模型参数
 	var requestBody map[string]interface{}
 	isStream := false
-	requestedModel := "unknown"
+	requestedModel = "unknown"
 	modifiedRequestBody := string(bodyBytes) // 用于历史记录的请求体
 
 	if len(bodyBytes) > 0 && json.Valid(bodyBytes) {
@@ -199,12 +239,10 @@ func proxyHandler(c *gin.Context) {
 				requestedModel = model
 				logger.Info("Original request model: %s", model)
 
-				// 使用供应商配置的模型替换请求中的模型
-				if provider.Model != "" {
-					requestBody["model"] = provider.Model
-					requestedModel = provider.Model
-					logger.Info("Replaced with provider model: %s", provider.Model)
-				}
+				// 使用映射解析出的 provider_model 替换请求中的模型
+				requestBody["model"] = providerModel
+				requestedModel = providerModel
+				logger.Info("Replaced with provider model: %s", providerModel)
 			}
 
 			// 自动格式转换：如果请求格式与提供商格式不匹配，需要转换
