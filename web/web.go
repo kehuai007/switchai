@@ -666,11 +666,18 @@ func testServerKey(c *gin.Context) {
 	keyID := c.Param("id")
 
 	var req struct {
-		ProviderType string `json:"provider_type"` // "anthropic" 或 "openai"
+		ProviderType  string `json:"provider_type"` // "anthropic" 或 "openai"
+		ProviderID    string `json:"provider_id"`
+		ProviderModel string `json:"provider_model"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if req.ProviderID == "" || req.ProviderModel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider_id and provider_model required"})
 		return
 	}
 
@@ -686,10 +693,10 @@ func testServerKey(c *gin.Context) {
 		return
 	}
 
-	// 始终使用激活的提供商，格式转换由代理自动处理
-	provider := cfg.GetFirstActiveProvider()
+	// 使用请求指定的提供商和模型进行测试（绕过映射路由）
+	provider := cfg.GetProviderByID(req.ProviderID)
 	if provider == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No active provider configured"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Provider not found"})
 		return
 	}
 
@@ -705,7 +712,7 @@ func testServerKey(c *gin.Context) {
 	// 根据要测试的格式发送请求，代理会自动进行格式转换
 	if isOpenAIFormat {
 		openAIReq := map[string]interface{}{
-			"model": provider.Model,
+			"model": req.ProviderModel,
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
@@ -715,7 +722,7 @@ func testServerKey(c *gin.Context) {
 		targetURL = baseURL + "/v1/chat/completions"
 	} else {
 		claudeReq := map[string]interface{}{
-			"model": provider.Model,
+			"model": req.ProviderModel,
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
