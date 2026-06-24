@@ -751,6 +751,38 @@ func (c *Config) LoadMappingsForKey(keyID string) []ModelMapping {
 	return out
 }
 
+// GetMappingForRouting 查找 keyID+userModel 的映射，返回 (mapping, target_provider, error)
+// 错误语义：
+//   - 找不到映射 → "model not allowed for this key"
+//   - provider 不存在 → "configured provider missing"
+//   - provider IsActive=false → "model not supported (provider inactive)"
+func (c *Config) GetMappingForRouting(keyID, userModel string) (*ModelMapping, *Provider, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var m ModelMapping
+	err := db.QueryRow(
+		"SELECT id, server_key_id, user_model, provider_id, provider_model, created_at FROM model_mappings WHERE server_key_id = ? AND user_model = ?",
+		keyID, userModel,
+	).Scan(&m.ID, &m.ServerKeyID, &m.UserModel, &m.ProviderID, &m.ProviderModel, &m.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil, fmt.Errorf("model %q not allowed for this key", userModel)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for i := range c.Providers {
+		if c.Providers[i].ID == m.ProviderID {
+			if !c.Providers[i].IsActive {
+				return nil, nil, fmt.Errorf("model %q not supported (provider inactive)", userModel)
+			}
+			return &m, &c.Providers[i], nil
+		}
+	}
+	return nil, nil, fmt.Errorf("configured provider missing")
+}
+
 // AddMapping 添加一条映射；UNIQUE 冲突返回 error
 func (c *Config) AddMapping(keyID string, m ModelMapping) (ModelMapping, error) {
 	c.mu.Lock()

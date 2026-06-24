@@ -57,6 +57,10 @@ func setupTestDB(t *testing.T) func() {
 }
 
 const testSchemaSQL = `
+CREATE TABLE IF NOT EXISTS config (
+	key TEXT PRIMARY KEY,
+	value TEXT
+);
 CREATE TABLE IF NOT EXISTS providers (
 	id TEXT PRIMARY KEY,
 	name TEXT,
