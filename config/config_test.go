@@ -123,8 +123,8 @@ func TestConfig_AddMapping_GetMappingForRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddMapping: %v", err)
 	}
-	if m.ID == "" {
-		t.Errorf("expected mapping ID assigned")
+	if m.ID == "" || m.UserModel != "claude-sonnet-4-5" || m.ServerKeyID != sk.ID || m.ProviderID != p.ID || m.ProviderModel != "Y" || m.CreatedAt == "" {
+		t.Errorf("AddMapping returned incomplete mapping: %+v", m)
 	}
 
 	// 查路由
@@ -145,9 +145,15 @@ func TestConfig_AddMapping_DuplicateUserModel(t *testing.T) {
 	defer cleanup()
 
 	cfg := &Config{}
-	cfg.Load()
-	cfg.AddProvider(Provider{ID: "p1", Name: "P1", BaseURL: "x", APIKey: "k", Model: "X", IsActive: true, CreatedAt: "now", Order: 1})
-	cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1})
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddProvider(Provider{ID: "p1", Name: "P1", BaseURL: "x", APIKey: "k", Model: "X", IsActive: true, CreatedAt: time.Now().Format(time.RFC3339), Order: 1}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
 
 	keyID := lookupKeyIDByKey(cfg, "sk-1")
 	if _, err := cfg.AddMapping(keyID, ModelMapping{UserModel: "A", ProviderID: "p1", ProviderModel: "X"}); err != nil {
