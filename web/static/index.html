@@ -252,7 +252,8 @@
                 </div>
                 <div class="form-group">
                     <label>模型名称</label>
-                    <input type="text" name="model" required placeholder="step-3.5-flash">
+                    <input type="text" name="model" required placeholder="claude-sonnet-4-5">
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">支持多个模型，用 <code>;</code> 分割，如 <code>claude-sonnet-4-5;claude-opus-4-1</code></p>
                 </div>
                 <div class="form-group">
                     <label>API 格式</label>
@@ -261,6 +262,13 @@
                         <option value="true">OpenAI 格式</option>
                     </select>
                     <p style="font-size: 12px; color: #666; margin-top: 5px;">选择该厂商使用的 API 格式</p>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" name="is_active" id="addIsActive" style="width: auto; cursor: pointer;" checked>
+                        <span>激活此提供商</span>
+                    </label>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">未激活的 provider 不能被路由到</p>
                 </div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
                     <button type="button" class="btn-danger" onclick="hideAddModal()">取消</button>
@@ -290,7 +298,8 @@
                 </div>
                 <div class="form-group">
                     <label>模型名称</label>
-                    <input type="text" name="model" id="editModel" required placeholder="step-3.5-flash">
+                    <input type="text" name="model" id="editModel" required placeholder="claude-sonnet-4-5">
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">支持多个模型，用 <code>;</code> 分割</p>
                 </div>
                 <div class="form-group">
                     <label>API 格式</label>
@@ -299,6 +308,12 @@
                         <option value="true">OpenAI 格式</option>
                     </select>
                     <p style="font-size: 12px; color: #666; margin-top: 5px;">选择该厂商使用的 API 格式</p>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" name="is_active" id="editIsActive" style="width: auto; cursor: pointer;">
+                        <span>激活此提供商</span>
+                    </label>
                 </div>
                 <div id="testResult" class="hidden" style="margin-bottom: 15px; padding: 10px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
@@ -392,7 +407,6 @@
 
     <script>
         let providers = [];
-        let activeProvider = '';
         let ws = null;
         let serverKeys = [];
         let keyStats = {};
@@ -953,7 +967,6 @@
             }
             const data = await res.json();
             providers = data.providers || [];
-            activeProvider = data.active_provider;
 
             // 按序号排序
             providers.sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -979,13 +992,13 @@
             }
 
             list.innerHTML = providers.map(p => `
-                <div class="provider-item ${p.id === activeProvider ? 'active' : ''}">
+                <div class="provider-item ${p.is_active ? 'active' : ''}">
                     <div class="provider-item-header">
                         <div class="provider-order">${p.order || 0}</div>
                         <div class="provider-item-info">
                             <h4>
                                 ${p.name}
-                                ${p.id === activeProvider ? '<span class="badge badge-active">当前使用</span>' : '<span class="badge badge-inactive">未激活</span>'}
+                                ${p.is_active ? '<span class="badge badge-active">已激活</span>' : '<span class="badge badge-inactive">未激活</span>'}
                             </h4>
                             <p><span class="provider-url">${p.base_url}</span></p>
                         </div>
@@ -1001,7 +1014,7 @@
                         </div>
                     </div>
                     <div class="provider-item-actions">
-                        ${p.id !== activeProvider ? `<button class="btn-success" onclick="activateProvider('${p.id}')">激活</button>` : ''}
+                        <button class="btn-primary" onclick="toggleProviderActive('${p.id}')">${p.is_active ? '取消激活' : '激活'}</button>
                         <button class="btn-primary" onclick="editProvider('${p.id}')">编辑</button>
                         <button class="btn-danger" onclick="deleteProvider('${p.id}')">删除</button>
                     </div>
@@ -1009,9 +1022,8 @@
             `).join('');
         }
 
-        async function activateProvider(id) {
+        async function toggleProviderActive(id) {
             await fetch(`/api/providers/${id}/activate`, { method: 'POST' });
-            await loadProviders();
         }
 
         async function deleteProvider(id) {
@@ -1049,6 +1061,7 @@
             document.getElementById('editApiKey').value = ''; // 不返回API Key，保持为空
             document.getElementById('editModel').value = provider.model;
             document.getElementById('editIsOpenAIFormat').value = provider.is_openai_format ? 'true' : 'false';
+            document.getElementById('editIsActive').checked = provider.is_active;
 
             showEditModal();
         }
@@ -1170,7 +1183,8 @@
                 base_url: formData.get('base_url'),
                 api_key: formData.get('api_key'),
                 model: formData.get('model').trim(),
-                is_openai_format: formData.get('is_openai_format') === 'true'
+                is_openai_format: formData.get('is_openai_format') === 'true',
+                is_active: document.querySelector('#addIsActive').checked
             };
 
             try {
@@ -1204,7 +1218,7 @@
                 api_key: formData.get('api_key'),
                 model: formData.get('model').trim(),
                 is_openai_format: formData.get('is_openai_format') === 'true',
-                is_active: providers.find(p => p.id === id)?.is_active || false,
+                is_active: document.querySelector('#editIsActive').checked,
                 created_at: providers.find(p => p.id === id)?.created_at || new Date().toISOString()
             };
 
