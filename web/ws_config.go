@@ -38,10 +38,23 @@ func (cb *ConfigBroadcaster) RemoveClient(conn *websocket.Conn) {
 
 func (cb *ConfigBroadcaster) Broadcast(event ConfigEvent) {
 	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	var dead []*websocket.Conn
 	for conn := range cb.clients {
 		if err := conn.WriteJSON(event); err != nil {
 			log.Printf("ws_config broadcast error: %v", err)
+			dead = append(dead, conn)
+		}
+	}
+	cb.mu.RUnlock()
+
+	if len(dead) > 0 {
+		cb.mu.Lock()
+		for _, conn := range dead {
+			delete(cb.clients, conn)
+		}
+		cb.mu.Unlock()
+		for _, conn := range dead {
+			_ = conn.Close()
 		}
 	}
 }
