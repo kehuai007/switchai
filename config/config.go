@@ -147,6 +147,17 @@ func initDB() error {
 		daily_cost_limit REAL DEFAULT 0,
 		total_cost_limit REAL DEFAULT 0
 	);
+	CREATE TABLE IF NOT EXISTS model_mappings (
+		id TEXT PRIMARY KEY,
+		server_key_id TEXT NOT NULL,
+		user_model TEXT NOT NULL,
+		provider_id TEXT NOT NULL,
+		provider_model TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		UNIQUE(server_key_id, user_model),
+		FOREIGN KEY (server_key_id) REFERENCES server_keys(id) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS idx_model_mappings_key ON model_mappings(server_key_id);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
