@@ -439,8 +439,7 @@ func getProviders(c *gin.Context) {
 		providers[i].APIKey = "" // 返回空，避免泄露
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"providers":       providers,
-		"active_provider": cfg.ActiveProvider,
+		"providers": providers,
 	})
 }
 
@@ -499,12 +498,24 @@ func deleteProvider(c *gin.Context) {
 
 func activateProvider(c *gin.Context) {
 	id := c.Param("id")
-	if err := config.GetConfig().SetActiveProvider(id); err != nil {
+	cfg := config.GetConfig()
+
+	provider := cfg.GetProviderByID(id)
+	if provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Provider not found"})
+		return
+	}
+
+	provider.IsActive = !provider.IsActive
+	if err := cfg.UpdateProvider(id, *provider); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Provider activated"})
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "Provider activation toggled",
+		"is_active": provider.IsActive,
+	})
 }
 
 // testProvider 测试提供商连接，发送 "hi" 消息
@@ -652,7 +663,7 @@ func testServerKey(c *gin.Context) {
 	}
 
 	// 始终使用激活的提供商，格式转换由代理自动处理
-	provider := cfg.GetActiveProvider()
+	provider := cfg.GetFirstActiveProvider()
 	if provider == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No active provider configured"})
 		return

@@ -74,14 +74,13 @@ type ServerKey struct {
 }
 
 type Config struct {
-	Providers      []Provider            `json:"providers"`
-	ServerKeys     []ServerKey           `json:"server_keys"` // 服务器密钥列表
-	ActiveProvider string                `json:"active_provider"`
-	TOTPSecret     string               `json:"totp_secret"`     // TOTP 2FA 密钥
-	TOTPEnabled    bool                 `json:"totp_enabled"`    // 是否已启用 2FA
-	SessionTokens  []SessionTokenEntry  `json:"session_tokens"`   // 多端登录的会话 token 列表
-	SkipAuth       bool                 `json:"skip_auth"`        // 跳过认证（内网部署）
-	mu             sync.RWMutex
+	Providers     []Provider            `json:"providers"`
+	ServerKeys    []ServerKey           `json:"server_keys"` // 服务器密钥列表
+	TOTPSecret    string                `json:"totp_secret"`  // TOTP 2FA 密钥
+	TOTPEnabled   bool                  `json:"totp_enabled"` // 是否已启用 2FA
+	SessionTokens []SessionTokenEntry   `json:"session_tokens"` // 多端登录的会话 token 列表
+	SkipAuth      bool                  `json:"skip_auth"`      // 跳过认证（内网部署）
+	mu            sync.RWMutex
 }
 
 var skipAuthMode bool
@@ -186,17 +185,9 @@ func (c *Config) Load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 加载 active_provider
-	var activeProvider string
-	err := db.QueryRow("SELECT value FROM config WHERE key = 'active_provider'").Scan(&activeProvider)
-	if err != nil && err != sql.ErrNoRows {
-		return err
-	}
-	c.ActiveProvider = activeProvider
-
 	// 加载 totp_secret
 	var totpSecret string
-	err = db.QueryRow("SELECT value FROM config WHERE key = 'totp_secret'").Scan(&totpSecret)
+	err := db.QueryRow("SELECT value FROM config WHERE key = 'totp_secret'").Scan(&totpSecret)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -276,14 +267,8 @@ func (c *Config) Save() error {
 }
 
 func (c *Config) save() error {
-	// 保存 active_provider
-	_, err := db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('active_provider', ?)", c.ActiveProvider)
-	if err != nil {
-		return err
-	}
-
 	// 保存 totp_secret
-	_, err = db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('totp_secret', ?)", c.TOTPSecret)
+	_, err := db.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('totp_secret', ?)", c.TOTPSecret)
 	if err != nil {
 		return err
 	}
@@ -350,21 +335,19 @@ func GetConfig() *Config {
 	return cfg
 }
 
-func (c *Config) GetActiveProvider() *Provider {
+// GetFirstActiveProvider 返回第一个 IsActive=true 的 provider，用于 testProvider 等场景。
+func (c *Config) GetFirstActiveProvider() *Provider {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	for i := range c.Providers {
-		if c.Providers[i].ID == c.ActiveProvider {
+		if c.Providers[i].IsActive {
 			return &c.Providers[i]
 		}
 	}
-
-	// 如果没有活跃的提供商，返回第一个
 	if len(c.Providers) > 0 {
 		return &c.Providers[0]
 	}
-
 	return nil
 }
 
@@ -381,29 +364,6 @@ func (c *Config) GetProviderByID(id string) *Provider {
 	return nil
 }
 
-// GetProviderByFormat 根据API格式获取提供商，优先返回激活的提供商
-func (c *Config) GetProviderByFormat(isOpenAIFormat bool) *Provider {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	// 优先返回激活的且格式匹配的提供商
-	for i := range c.Providers {
-		if c.Providers[i].ID == c.ActiveProvider && c.Providers[i].IsOpenAIFormat == isOpenAIFormat {
-			return &c.Providers[i]
-		}
-	}
-
-	// 否则返回第一个格式匹配的提供商
-	for i := range c.Providers {
-		if c.Providers[i].IsOpenAIFormat == isOpenAIFormat {
-			return &c.Providers[i]
-		}
-	}
-
-	// 没有找到匹配格式的提供商，返回活跃提供商（可能格式不匹配）
-	return c.GetActiveProvider()
-}
-
 func (c *Config) AddProvider(p Provider) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -418,11 +378,6 @@ func (c *Config) AddProvider(p Provider) error {
 	p.Order = maxOrder + 1
 
 	c.Providers = append(c.Providers, p)
-
-	// 如果是第一个提供商，设置为活跃
-	if len(c.Providers) == 1 {
-		c.ActiveProvider = p.ID
-	}
 
 	// 按序号排序
 	c.sortProviders()
@@ -463,25 +418,12 @@ func (c *Config) DeleteProvider(id string) error {
 				}
 			}
 
-			// 如果删除的是活跃提供商，切换到第一个
-			if c.ActiveProvider == id && len(c.Providers) > 0 {
-				c.ActiveProvider = c.Providers[0].ID
-			}
-
 			c.sortProviders()
 			return c.save()
 		}
 	}
 
 	return nil
-}
-
-func (c *Config) SetActiveProvider(id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.ActiveProvider = id
-	return c.save()
 }
 
 // sortProviders 按序号排序提供商（内部使用，调用前需要加锁）
