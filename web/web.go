@@ -78,6 +78,10 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/server-keys/generate", generateServerKey)
 		api.GET("/server-keys/:id/stats", getServerKeyStats)
 		api.POST("/server-keys/:id/test", testServerKey)
+		api.GET("/server-keys/:id/mappings", getKeyMappings)
+		api.POST("/server-keys/:id/mappings", addKeyMapping)
+		api.PUT("/server-keys/:id/mappings/:mapping_id", updateKeyMapping)
+		api.DELETE("/server-keys/:id/mappings/:mapping_id", deleteKeyMapping)
 
 		// 提供商管理
 		api.GET("/providers", getProviders)
@@ -309,6 +313,7 @@ func addServerKey(c *gin.Context) {
 		return
 	}
 
+	// TODO(task-16): broadcastConfigChange(c, "key_added", key.ID)
 	c.JSON(http.StatusOK, gin.H{"message": "密钥添加成功", "key": key})
 }
 
@@ -326,6 +331,7 @@ func updateServerKey(c *gin.Context) {
 		return
 	}
 
+	// TODO(task-16): broadcastConfigChange(c, "key_updated", id)
 	c.JSON(http.StatusOK, gin.H{"message": "密钥更新成功"})
 }
 
@@ -337,6 +343,7 @@ func deleteServerKey(c *gin.Context) {
 		return
 	}
 
+	// TODO(task-16): broadcastConfigChange(c, "key_deleted", id)
 	c.JSON(http.StatusOK, gin.H{"message": "密钥删除成功"})
 }
 
@@ -461,6 +468,7 @@ func addProvider(c *gin.Context) {
 		return
 	}
 
+	// TODO(task-16): broadcastConfigChange(c, "provider_added", provider.ID)
 	c.JSON(http.StatusOK, provider)
 }
 
@@ -487,16 +495,26 @@ func updateProvider(c *gin.Context) {
 		return
 	}
 
+	// TODO(task-16): broadcastConfigChange(c, "provider_updated", id)
 	c.JSON(http.StatusOK, provider)
 }
 
 func deleteProvider(c *gin.Context) {
 	id := c.Param("id")
+	hasMappings, err := config.GetConfig().HasMappingsForProvider(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if hasMappings {
+		c.JSON(http.StatusConflict, gin.H{"error": "provider has active mapping(s); delete them first"})
+		return
+	}
 	if err := config.GetConfig().DeleteProvider(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
+	// TODO(task-16): broadcastConfigChange(c, "provider_deleted", id)
 	c.JSON(http.StatusOK, gin.H{"message": "Provider deleted"})
 }
 
@@ -516,6 +534,7 @@ func activateProvider(c *gin.Context) {
 		return
 	}
 
+	// TODO(task-16): broadcastConfigChange(c, "provider_activated", id)
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Provider activation toggled",
 		"is_active": provider.IsActive,
@@ -840,4 +859,81 @@ func getHistoryDetail(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, record)
+}
+
+// getKeyMappings 获取指定密钥的所有模型映射
+func getKeyMappings(c *gin.Context) {
+	keyID := c.Param("id")
+	mappings := config.GetConfig().LoadMappingsForKey(keyID)
+	if mappings == nil {
+		mappings = []config.ModelMapping{}
+	}
+	c.JSON(http.StatusOK, gin.H{"mappings": mappings})
+}
+
+// addKeyMapping 为指定密钥添加模型映射
+func addKeyMapping(c *gin.Context) {
+	keyID := c.Param("id")
+	var m config.ModelMapping
+	if err := c.ShouldBindJSON(&m); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if m.UserModel == "" || m.ProviderID == "" || m.ProviderModel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "required field missing"})
+		return
+	}
+	if config.GetConfig().GetProviderByID(m.ProviderID) == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider not found"})
+		return
+	}
+
+	created, err := config.GetConfig().AddMapping(keyID, m)
+	if err != nil {
+		// UNIQUE 冲突
+		c.JSON(http.StatusConflict, gin.H{"error": "duplicate user model name"})
+		return
+	}
+
+	// TODO(task-16): broadcastConfigChange(c, "mapping_added", created.ID)
+	c.JSON(http.StatusOK, created)
+}
+
+// updateKeyMapping 更新指定密钥的某个模型映射
+func updateKeyMapping(c *gin.Context) {
+	keyID := c.Param("id")
+	mappingID := c.Param("mapping_id")
+	var m config.ModelMapping
+	if err := c.ShouldBindJSON(&m); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if m.UserModel == "" || m.ProviderID == "" || m.ProviderModel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "required field missing"})
+		return
+	}
+	if config.GetConfig().GetProviderByID(m.ProviderID) == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider not found"})
+		return
+	}
+
+	if err := config.GetConfig().UpdateMapping(keyID, mappingID, m); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	// TODO(task-16): broadcastConfigChange(c, "mapping_updated", mappingID)
+	c.JSON(http.StatusOK, gin.H{"message": "mapping updated"})
+}
+
+// deleteKeyMapping 删除指定密钥的某个模型映射
+func deleteKeyMapping(c *gin.Context) {
+	keyID := c.Param("id")
+	mappingID := c.Param("mapping_id")
+	if err := config.GetConfig().DeleteMapping(keyID, mappingID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// TODO(task-16): broadcastConfigChange(c, "mapping_deleted", mappingID)
+	c.JSON(http.StatusOK, gin.H{"message": "mapping deleted"})
 }
