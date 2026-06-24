@@ -173,3 +173,72 @@ func lookupKeyIDByKey(cfg *Config, key string) string {
 	}
 	return ""
 }
+
+func TestConfig_GetMappingForRouting_NotFound(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddProvider(Provider{ID: "p1", Name: "P1", BaseURL: "x", APIKey: "k", Model: "X", IsActive: true, CreatedAt: time.Now().Format(time.RFC3339), Order: 1}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-1")
+
+	_, _, err := cfg.GetMappingForRouting(keyID, "no-such-model")
+	if err == nil {
+		t.Errorf("expected error for missing mapping")
+	}
+}
+
+func TestConfig_GetMappingForRouting_ProviderInactive(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddProvider(Provider{ID: "p1", Name: "P1", BaseURL: "x", APIKey: "k", Model: "X", IsActive: false, CreatedAt: time.Now().Format(time.RFC3339), Order: 1}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-1")
+	if _, err := cfg.AddMapping(keyID, ModelMapping{UserModel: "A", ProviderID: "p1", ProviderModel: "X"}); err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+
+	_, _, err := cfg.GetMappingForRouting(keyID, "A")
+	if err == nil {
+		t.Errorf("expected error for inactive provider")
+	}
+}
+
+func TestConfig_GetMappingForRouting_ProviderMissing(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-1")
+	if _, err := cfg.AddMapping(keyID, ModelMapping{UserModel: "A", ProviderID: "ghost-p", ProviderModel: "X"}); err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+
+	_, _, err := cfg.GetMappingForRouting(keyID, "A")
+	if err == nil {
+		t.Errorf("expected error for missing provider")
+	}
+}
