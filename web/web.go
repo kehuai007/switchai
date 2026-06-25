@@ -557,22 +557,44 @@ func testProvider(c *gin.Context) {
 		return
 	}
 
-	log.Printf("🔍 testProvider: id=%s, name=%s, baseURL=%s, apiKey=%s, isOpenAI=%v",
-		id, provider.Name, provider.BaseURL, provider.APIKey[:10]+"...", provider.IsOpenAIFormat)
+	// 解析请求体：可选的 model 字段（前端让用户在 supported_models 列表里挑一个来测试）
+	var body struct {
+		Model string `json:"model"`
+	}
+	_ = c.ShouldBindJSON(&body) // body 可为空
+
+	// 确定测试用的模型：优先用请求体里的 model，否则从支持的模型里取第一个。
+	// provider.Model 字段存储的是分号分隔的多模型名单（如 "X;Y;Z"），不能直接当单模型发给上游。
+	testModel := strings.TrimSpace(body.Model)
+	if testModel == "" {
+		models := provider.GetSupportedModels()
+		if len(models) > 0 {
+			testModel = models[0]
+		} else {
+			testModel = strings.TrimSpace(provider.Model)
+		}
+	}
+	if testModel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no model available to test (provider has no models configured)"})
+		return
+	}
+
+	log.Printf("🔍 testProvider: id=%s, name=%s, baseURL=%s, isOpenAI=%v, testModel=%s",
+		id, provider.Name, provider.BaseURL, provider.IsOpenAIFormat, testModel)
 
 	// 根据提供商格式构建测试请求
 	var reqBody []byte
 	var targetURL string
-	var err error
 
 	if provider.IsOpenAIFormat {
 		// OpenAI 格式
 		openAIReq := map[string]interface{}{
-			"model": provider.Model,
+			"model": testModel,
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
-			"max_tokens": 10,
+			// 测试只是要确认连通+看到完整回复，10 太短会触发 finish_reason=length 让 AI 答一半就停。
+			"max_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(openAIReq)
 		targetURL = provider.BaseURL + "/chat/completions"
@@ -580,11 +602,11 @@ func testProvider(c *gin.Context) {
 	} else {
 		// Claude 格式
 		claudeReq := map[string]interface{}{
-			"model": provider.Model,
+			"model": testModel,
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
-			"max_tokens": 10,
+			"max_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(claudeReq)
 		targetURL = provider.BaseURL + "/v1/messages"
@@ -669,9 +691,10 @@ func testServerKey(c *gin.Context) {
 	keyID := c.Param("id")
 
 	var req struct {
-		ProviderType  string `json:"provider_type"` // "anthropic" 或 "openai"
+		ProviderType  string `json:"provider_type"`  // "anthropic" 或 "openai"
 		ProviderID    string `json:"provider_id"`
-		ProviderModel string `json:"provider_model"`
+		ProviderModel string `json:"provider_model"` // 仅用于日志/校验，真正请求体里用的是 user_model
+		UserModel     string `json:"user_model"`     // 用户原始请求的模型名（映射的 user_model 字段）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -679,8 +702,8 @@ func testServerKey(c *gin.Context) {
 		return
 	}
 
-	if req.ProviderID == "" || req.ProviderModel == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "provider_id and provider_model required"})
+	if req.ProviderID == "" || req.ProviderModel == "" || req.UserModel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider_id, provider_model and user_model required"})
 		return
 	}
 
@@ -696,14 +719,15 @@ func testServerKey(c *gin.Context) {
 		return
 	}
 
-	// 使用请求指定的提供商和模型进行测试（绕过映射路由）
+	// 使用请求指定的提供商和模型进行测试（按真实用户路径走代理路由，让代理把 user_model 替换成 provider_model）
 	provider := cfg.GetProviderByID(req.ProviderID)
 	if provider == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Provider not found"})
 		return
 	}
 
-	log.Printf("🔍 Testing server-key: %s, provider: %s (format: %s, key type: %s)", keyID, provider.Name, req.ProviderType, serverKey.Key[:12]+"...")
+	log.Printf("🔍 Testing server-key: %s, user_model: %s → provider: %s (format: %s, key type: %s)",
+		keyID, req.UserModel, provider.Name, req.ProviderType, serverKey.Key[:12]+"...")
 
 	// 构建测试请求，发送到本服务的代理端点
 	var reqBody []byte
@@ -712,24 +736,24 @@ func testServerKey(c *gin.Context) {
 	// 获取本服务地址
 	baseURL := "http://" + c.Request.Host
 
-	// 根据要测试的格式发送请求，代理会自动进行格式转换
+	// 按真实客户端的方式发送：用 user_model 作为请求体 model，代理会根据该 key 的映射把它替换成 provider_model 并转发。
 	if isOpenAIFormat {
 		openAIReq := map[string]interface{}{
-			"model": req.ProviderModel,
+			"model": req.UserModel,
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
-			"max_tokens": 10,
+			"max_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(openAIReq)
 		targetURL = baseURL + "/v1/chat/completions"
 	} else {
 		claudeReq := map[string]interface{}{
-			"model": req.ProviderModel,
+			"model": req.UserModel,
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
-			"max_tokens": 10,
+			"max_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(claudeReq)
 		targetURL = baseURL + "/v1/messages"
