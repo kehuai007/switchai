@@ -37,7 +37,15 @@ echo.
 REM Build ldflags
 set LDFLAGS=-s -w -X main.versionMajor=%VERSION_MAJOR% -X main.versionMinor=%VERSION_MINOR% -X main.versionPatch=%VERSION_PATCH% -X main.gitCommit=%GIT_COMMIT%
 
-echo [1/2] Building for Windows (amd64)...
+echo [0/3] Killing any process listening on port 7777...
+set FOUND_PIDS=
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :7777') do (
+    echo   Found PID %%a on port 7777, killing...
+    taskkill /F /PID %%a >nul 2>nul
+)
+echo.
+
+echo [1/3] Building for Windows (amd64)...
 set CGO_ENABLED=0
 set GOOS=windows
 set GOARCH=amd64
@@ -49,7 +57,7 @@ if %errorlevel% neq 0 (
 echo Windows build completed: dist\switchai-windows-amd64.exe
 
 echo.
-echo [2/2] Building for Linux (amd64)...
+echo [2/3] Building for Linux (amd64)...
 set GOOS=linux
 set GOARCH=amd64
 go build -ldflags "%LDFLAGS%" -o dist\switchai-linux-amd64
