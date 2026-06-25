@@ -1268,15 +1268,15 @@
 
             try {
                 const res = await fetch(`/api/providers/${providerId}/fetch-models`, { method: 'POST' });
-                const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
-                    resultEl.innerHTML = `<span style="color: #c53030;">获取失败: ${data.error || '未知错误'}</span>`;
+                    const data = await res.json().catch(() => ({}));
+                    alert('获取失败: ' + (data.error || '未知错误'));
+                    resultEl.innerHTML = `<span style="color: #c53030;">已弹出错误提示</span>`;
                     return;
                 }
-                // 填入 model 输入框（不自动保存，等用户点保存）
+                const data = await res.json();
                 document.getElementById('editModel').value = data.models;
-                const sourceLabel = data.source === 'builtin' ? '（Anthropic 内置清单）' : '（API 返回）';
-                resultEl.innerHTML = `<span style="color: #38a169;">已获取 ${data.count} 个模型${sourceLabel}，请检查后保存</span>`;
+                resultEl.innerHTML = `<span style="color: #38a169;">已获取 ${data.count} 个模型，请检查后保存</span>`;
             } catch (err) {
                 resultEl.innerHTML = `<span style="color: #c53030;">请求失败: ${err.message}</span>`;
             }
@@ -1301,14 +1301,15 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ base_url: baseURL, api_key: apiKey, is_openai_format: isOpenAIFormat }),
                 });
-                const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
-                    resultEl.innerHTML = `<span style="color: #c53030;">获取失败: ${data.error || '未知错误'}</span>`;
+                    const data = await res.json().catch(() => ({}));
+                    alert('获取失败: ' + (data.error || '未知错误'));
+                    resultEl.innerHTML = `<span style="color: #c53030;">已弹出错误提示</span>`;
                     return;
                 }
+                const data = await res.json();
                 document.getElementById('addModel').value = data.models;
-                const sourceLabel = data.source === 'builtin' ? '（Anthropic 内置清单）' : '（API 返回）';
-                resultEl.innerHTML = `<span style="color: #38a169;">已获取 ${data.count} 个模型${sourceLabel}，请检查后保存</span>`;
+                resultEl.innerHTML = `<span style="color: #38a169;">已获取 ${data.count} 个模型，请检查后保存</span>`;
             } catch (err) {
                 resultEl.innerHTML = `<span style="color: #c53030;">请求失败: ${err.message}</span>`;
             }

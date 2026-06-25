@@ -952,16 +952,6 @@ func deleteKeyMapping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "mapping deleted"})
 }
 
-// Anthropic 没有 models 接口 — fallback 到内置清单
-// 最后更新：2026-06-25 — Anthropic 当前在售模型
-var anthropicKnownModels = []string{
-	"claude-sonnet-4-5",
-	"claude-opus-4-0",
-	"claude-3-5-sonnet-20241022",
-	"claude-3-5-haiku-20241022",
-	"claude-3-opus-20240229",
-}
-
 // fetchOpenAIModels 调用 OpenAI 兼容的 /v1/models 接口
 func fetchOpenAIModels(modelsURL, apiKey string) ([]string, error) {
 	req, err := http.NewRequest("GET", modelsURL, nil)
@@ -996,8 +986,8 @@ func fetchOpenAIModels(modelsURL, apiKey string) ([]string, error) {
 	return models, nil
 }
 
-// resolveModels 根据 URL 和 is_openai_format 决定走 API 还是 Anthropic builtin
-func resolveModels(baseURL, apiKey string, isOpenAIFormat bool) (models []string, source string, err error) {
+// resolveModels 调用 provider 的 /v1/models 接口；任何错误都向上传播，不内置 fallback。
+func resolveModels(baseURL, apiKey string, isOpenAIFormat bool) ([]string, error) {
 	base := strings.TrimRight(baseURL, "/")
 	var modelsURL string
 	if strings.HasSuffix(base, "/v1") {
@@ -1006,16 +996,19 @@ func resolveModels(baseURL, apiKey string, isOpenAIFormat bool) (models []string
 		modelsURL = base + "/v1/models"
 	}
 
-	if !isOpenAIFormat {
-		// Anthropic 格式 — 直接用内置清单
-		return anthropicKnownModels, "builtin", nil
+	models, err := fetchOpenAIModels(modelsURL, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", describeProviderFormat(isOpenAIFormat), err)
 	}
+	return models, nil
+}
 
-	models, fetchErr := fetchOpenAIModels(modelsURL, apiKey)
-	if fetchErr != nil {
-		return nil, "", fetchErr
+// describeProviderFormat 给出易读的错误前缀（Anthropic 不会有 /v1/models）
+func describeProviderFormat(isOpenAIFormat bool) string {
+	if isOpenAIFormat {
+		return "fetch models failed"
 	}
-	return models, "api", nil
+	return "fetch models failed (Anthropic 格式不暴露 /v1/models，请手动填写或使用支持 OpenAI 协议的代理)"
 }
 
 // fetchProviderModels 处理 POST /api/providers/:id/fetch-models — 编辑弹窗用
@@ -1028,13 +1021,13 @@ func fetchProviderModels(c *gin.Context) {
 		return
 	}
 
-	models, source, err := resolveModels(provider.BaseURL, provider.APIKey, provider.IsOpenAIFormat)
+	models, err := resolveModels(provider.BaseURL, provider.APIKey, provider.IsOpenAIFormat)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch models: %v", err)})
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 	joined := strings.Join(models, ";")
-	c.JSON(http.StatusOK, gin.H{"models": joined, "count": len(models), "source": source})
+	c.JSON(http.StatusOK, gin.H{"models": joined, "count": len(models)})
 }
 
 // fetchModelsByCredentials 处理 POST /api/providers/fetch-models — 添加弹窗用
@@ -1054,11 +1047,11 @@ func fetchModelsByCredentials(c *gin.Context) {
 		return
 	}
 
-	models, source, err := resolveModels(req.BaseURL, req.APIKey, req.IsOpenAIFormat)
+	models, err := resolveModels(req.BaseURL, req.APIKey, req.IsOpenAIFormat)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch models: %v", err)})
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 	joined := strings.Join(models, ";")
-	c.JSON(http.StatusOK, gin.H{"models": joined, "count": len(models), "source": source})
+	c.JSON(http.StatusOK, gin.H{"models": joined, "count": len(models)})
 }
