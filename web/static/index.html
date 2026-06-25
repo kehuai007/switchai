@@ -1431,6 +1431,9 @@
             const baseUrl = document.getElementById('editBaseUrl').value;
             const testModelSel = document.getElementById('editProviderTestModel');
             const testModel = testModelSel.disabled ? '' : testModelSel.value;
+            // 实时读下拉值，不依赖保存后的 DB 配置 —— 用户切换下拉后立即影响本次测试
+            const formatSel = document.getElementById('editIsOpenAIFormat');
+            const isOpenAIFormat = formatSel ? formatSel.value === 'true' : null;
 
             if (!baseUrl) {
                 showTestResult('请先填写 Base URL', false);
@@ -1443,11 +1446,14 @@
 
             showTestResult('正在测试连接 (model=' + testModel + ')...', 'info');
 
+            const body = { model: testModel };
+            if (isOpenAIFormat !== null) body.is_openai_format = isOpenAIFormat;
+
             try {
                 const res = await fetch(`/api/providers/${id}/test`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model: testModel })
+                    body: JSON.stringify(body)
                 });
 
                 const data = await res.json();

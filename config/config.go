@@ -34,6 +34,36 @@ type Provider struct {
 	IsOpenAIFormat bool   `json:"is_openai_format"` // 标识是否为 OpenAI 格式的 API
 }
 
+// BuildProviderURL 拼接 BaseURL 和 endpoint，避免出现 /v1/v1 或 // 这类非法 URL。
+//   - BaseURL 末尾的 / 全部去掉（TrimRight），包括连续多个；
+//   - endpoint 应以 / 开头（无 / 会自动补），且**相对于 API v1 根**（如 /chat/completions、/messages、/models），
+//     不要带 /v1 前缀 —— 这里会根据 BaseURL 是否已含 /v1 决定是否补；
+//   - 如果 BaseURL 已经以 /v1 结尾（指向 API v1 根），endpoint 直接拼接；
+//   - 否则在 BaseURL 和 endpoint 之间插入 /v1；
+//
+// 调用方不需要关心上游是否真的暴露 /v1 —— 这里只负责 URL 字符串拼接，协议层语义由 IsOpenAIFormat
+// 等配置字段决定（参见 Provider.ChatEndpointURL）。
+func BuildProviderURL(baseURL, endpoint string) string {
+	base := strings.TrimRight(baseURL, "/")
+	if !strings.HasPrefix(endpoint, "/") {
+		endpoint = "/" + endpoint
+	}
+	if strings.HasSuffix(base, "/v1") {
+		return base + endpoint
+	}
+	return base + "/v1" + endpoint
+}
+
+// ChatEndpointURL 返回 provider 主端点（chat completions 或 messages）的完整 URL。
+// 由 IsOpenAIFormat 决定选哪条路径（OpenAI 用 /chat/completions，Anthropic 用 /messages），
+// URL 拼接复用 BuildProviderURL 以避免 /v1/v1 或 // 这类非法 URL。
+func (p *Provider) ChatEndpointURL() string {
+	if p.IsOpenAIFormat {
+		return BuildProviderURL(p.BaseURL, "/chat/completions")
+	}
+	return BuildProviderURL(p.BaseURL, "/messages")
+}
+
 // GetSupportedModels 解析 Model 字段（"X;Y;Z" 或单值），返回 trim 并过滤空段后的模型名列表。
 // 空字符串返回 nil（provider 未声明任何模型）。不去重 — 重复声明视为调用方责任。
 func (p *Provider) GetSupportedModels() []string {
@@ -556,7 +586,8 @@ func (c *Config) UpdateServerKey(id string, key ServerKey) error {
 			key.ID = id
 			key.CreatedAt = c.ServerKeys[i].CreatedAt
 			key.Order = c.ServerKeys[i].Order
-			key.Key = c.ServerKeys[i].Key // 不允许修改密钥值
+			key.Key = c.ServerKeys[i].Key    // 不允许修改密钥值
+			key.Mappings = c.ServerKeys[i].Mappings // 前端编辑表单不发 mappings，整体替换会清空内存里的映射
 			c.ServerKeys[i] = key
 			return c.save()
 		}

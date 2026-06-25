@@ -557,11 +557,21 @@ func testProvider(c *gin.Context) {
 		return
 	}
 
-	// 解析请求体：可选的 model 字段（前端让用户在 supported_models 列表里挑一个来测试）
+	// 解析请求体：可选的 model + is_openai_format 字段。
+	// model：前端让用户在 supported_models 列表里挑一个来测试。
+	// is_openai_format：前端实时读"API 格式"下拉框的值，覆盖 DB 里的 provider.IsOpenAIFormat；
+	// 用户切换下拉后立即影响本次测试，不必先保存。
 	var body struct {
-		Model string `json:"model"`
+		Model          string `json:"model"`
+		IsOpenAIFormat *bool  `json:"is_openai_format,omitempty"`
 	}
 	_ = c.ShouldBindJSON(&body) // body 可为空
+
+	// 测试时用的协议格式：请求体显式传了就用请求体的，否则回落到 provider DB 里的值
+	isOpenAIFormat := provider.IsOpenAIFormat
+	if body.IsOpenAIFormat != nil {
+		isOpenAIFormat = *body.IsOpenAIFormat
+	}
 
 	// 确定测试用的模型：优先用请求体里的 model，否则从支持的模型里取第一个。
 	// provider.Model 字段存储的是分号分隔的多模型名单（如 "X;Y;Z"），不能直接当单模型发给上游。
@@ -580,13 +590,13 @@ func testProvider(c *gin.Context) {
 	}
 
 	log.Printf("🔍 testProvider: id=%s, name=%s, baseURL=%s, isOpenAI=%v, testModel=%s",
-		id, provider.Name, provider.BaseURL, provider.IsOpenAIFormat, testModel)
+		id, provider.Name, provider.BaseURL, isOpenAIFormat, testModel)
 
 	// 根据提供商格式构建测试请求
 	var reqBody []byte
 	var targetURL string
 
-	if provider.IsOpenAIFormat {
+	if isOpenAIFormat {
 		// OpenAI 格式
 		openAIReq := map[string]interface{}{
 			"model": testModel,
@@ -597,7 +607,7 @@ func testProvider(c *gin.Context) {
 			"max_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(openAIReq)
-		targetURL = provider.BaseURL + "/chat/completions"
+		targetURL = config.BuildProviderURL(provider.BaseURL, "/chat/completions")
 		log.Printf("🔗 OpenAI format, targetURL: %s", targetURL)
 	} else {
 		// Claude 格式
@@ -609,7 +619,7 @@ func testProvider(c *gin.Context) {
 			"max_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(claudeReq)
-		targetURL = provider.BaseURL + "/v1/messages"
+		targetURL = config.BuildProviderURL(provider.BaseURL, "/messages")
 		log.Printf("🔗 Claude format, targetURL: %s", targetURL)
 	}
 
@@ -622,7 +632,7 @@ func testProvider(c *gin.Context) {
 
 	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 	req.Header.Set("Content-Type", "application/json")
-	if !provider.IsOpenAIFormat {
+	if !isOpenAIFormat {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 
@@ -1011,28 +1021,11 @@ func fetchOpenAIModels(modelsURL, apiKey string) ([]string, error) {
 }
 
 // resolveModels 调用 provider 的 /v1/models 接口；任何错误都向上传播，不内置 fallback。
-func resolveModels(baseURL, apiKey string, isOpenAIFormat bool) ([]string, error) {
-	base := strings.TrimRight(baseURL, "/")
-	var modelsURL string
-	if strings.HasSuffix(base, "/v1") {
-		modelsURL = base + "/models"
-	} else {
-		modelsURL = base + "/v1/models"
-	}
-
-	models, err := fetchOpenAIModels(modelsURL, apiKey)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %v", describeProviderFormat(isOpenAIFormat), err)
-	}
-	return models, nil
-}
-
-// describeProviderFormat 给出易读的错误前缀（Anthropic 不会有 /v1/models）
-func describeProviderFormat(isOpenAIFormat bool) string {
-	if isOpenAIFormat {
-		return "fetch models failed"
-	}
-	return "fetch models failed (Anthropic 格式不暴露 /v1/models，请手动填写或使用支持 OpenAI 协议的代理)"
+// 上游是否真的暴露 /v/models 取决于用户配置 —— 协议层的可行性由 isOpenAIFormat 之外的
+// 实际部署决定，本函数只负责 URL 拼接（复用 config.BuildProviderURL 避免 /v1/v1 或 //）。
+func resolveModels(baseURL, apiKey string) ([]string, error) {
+	modelsURL := config.BuildProviderURL(baseURL, "/models")
+	return fetchOpenAIModels(modelsURL, apiKey)
 }
 
 // fetchProviderModels 处理 POST /api/providers/:id/fetch-models — 编辑弹窗用
@@ -1045,7 +1038,7 @@ func fetchProviderModels(c *gin.Context) {
 		return
 	}
 
-	models, err := resolveModels(provider.BaseURL, provider.APIKey, provider.IsOpenAIFormat)
+	models, err := resolveModels(provider.BaseURL, provider.APIKey)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -1071,7 +1064,7 @@ func fetchModelsByCredentials(c *gin.Context) {
 		return
 	}
 
-	models, err := resolveModels(req.BaseURL, req.APIKey, req.IsOpenAIFormat)
+	models, err := resolveModels(req.BaseURL, req.APIKey)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return

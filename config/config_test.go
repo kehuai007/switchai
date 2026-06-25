@@ -4,11 +4,85 @@ import (
 	"database/sql"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestProvider_ChatEndpointURL(t *testing.T) {
+	tests := []struct {
+		name string
+		p    *Provider
+		want string
+	}{
+		{"openai with /v1 suffix", &Provider{BaseURL: "https://api.openai.com/v1", IsOpenAIFormat: true}, "https://api.openai.com/v1/chat/completions"},
+		{"openai with /v1 suffix + trailing slash", &Provider{BaseURL: "https://api.openai.com/v1/", IsOpenAIFormat: true}, "https://api.openai.com/v1/chat/completions"},
+		{"openai without /v1 suffix", &Provider{BaseURL: "https://api.openai.com", IsOpenAIFormat: true}, "https://api.openai.com/v1/chat/completions"},
+		{"anthropic with /v1 suffix", &Provider{BaseURL: "https://api.minimaxi.com/v1", IsOpenAIFormat: false}, "https://api.minimaxi.com/v1/messages"},
+		{"anthropic without /v1 suffix", &Provider{BaseURL: "https://api.anthropic.com", IsOpenAIFormat: false}, "https://api.anthropic.com/v1/messages"},
+		// 守护 web.testProvider 和 proxy.format-conversion 路径之前 naive 拼接导致的 /v1/v1/messages 重复 bug
+		{"anthropic with /v1 suffix (regression)", &Provider{BaseURL: "https://api.minimaxi.com/v1", IsOpenAIFormat: false}, "https://api.minimaxi.com/v1/messages"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.ChatEndpointURL(); got != tt.want {
+				t.Errorf("ChatEndpointURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildProviderURL 守护 URL 拼接逻辑：避免出现 /v1/v1 或 // 这类非法 URL。
+// 覆盖 trailing slash、连续 trailing slash、缺前导 /、纯 BaseURL 等常见 base_url 形态。
+func TestBuildProviderURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		endpoint string
+		want     string
+	}{
+		// 标准形态
+		{"no v1, no trailing slash", "https://api.example.com", "/chat/completions", "https://api.example.com/v1/chat/completions"},
+		{"with v1, no trailing slash", "https://api.example.com/v1", "/chat/completions", "https://api.example.com/v1/chat/completions"},
+		// trailing slash 各种形态 — 都不应引入 //
+		{"trailing slash, no v1", "https://api.example.com/", "/chat/completions", "https://api.example.com/v1/chat/completions"},
+		{"trailing slash, with v1", "https://api.example.com/v1/", "/chat/completions", "https://api.example.com/v1/chat/completions"},
+		{"double trailing slash, with v1", "https://api.example.com/v1//", "/chat/completions", "https://api.example.com/v1/chat/completions"},
+		{"triple trailing slash, with v1", "https://api.example.com/v1///", "/chat/completions", "https://api.example.com/v1/chat/completions"},
+		// endpoint 容忍无前导 /
+		{"endpoint without leading slash", "https://api.example.com", "chat/completions", "https://api.example.com/v1/chat/completions"},
+		{"endpoint without leading slash, with v1", "https://api.example.com/v1", "chat/completions", "https://api.example.com/v1/chat/completions"},
+		// 多种 endpoint
+		{"messages endpoint, no v1", "https://api.example.com", "/messages", "https://api.example.com/v1/messages"},
+		{"models endpoint, with v1", "https://api.example.com/v1", "/models", "https://api.example.com/v1/models"},
+		// 守护具体的 /v1/v1 bug
+		{"anthropic-style + /v1 suffix must not duplicate v1", "https://api.minimaxi.com/v1", "/messages", "https://api.minimaxi.com/v1/messages"},
+		// 中间路径含 v1 但末尾不是 v1（如 /api/v1）— 这时 API 根在该位置，直接拼接
+		{"baseURL path is /api/v1", "https://api.example.com/api/v1", "/messages", "https://api.example.com/api/v1/messages"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildProviderURL(tt.baseURL, tt.endpoint)
+			if got != tt.want {
+				t.Errorf("BuildProviderURL(%q, %q) = %q, want %q", tt.baseURL, tt.endpoint, got, tt.want)
+			}
+			// 拼接结果不应包含 // 或 /v1/v1 这类非法片段
+			if strings.Contains(got, "/v1/v1") {
+				t.Errorf("BuildProviderURL(%q, %q) = %q, contains illegal /v1/v1", tt.baseURL, tt.endpoint, got)
+			}
+			if strings.Contains(got, "//") {
+				// 排除 scheme 自带的 https://
+				stripped := strings.TrimPrefix(got, "https://")
+				stripped = strings.TrimPrefix(stripped, "http://")
+				if strings.Contains(stripped, "//") {
+					t.Errorf("BuildProviderURL(%q, %q) = %q, contains illegal //", tt.baseURL, tt.endpoint, got)
+				}
+			}
+		})
+	}
+}
 
 func TestProvider_GetSupportedModels(t *testing.T) {
 	tests := []struct {
@@ -335,6 +409,48 @@ func TestConfig_GetActiveMappingsForKey_UnknownKey(t *testing.T) {
 	got := cfg.GetActiveMappingsForKey("nonexistent-key-id")
 	if len(got) != 0 {
 		t.Errorf("got %d mappings, want 0", len(got))
+	}
+}
+
+// TestConfig_UpdateServerKey_PreservesMappings 验证 UpdateServerKey 不会清空内存里
+// 已加载的 Mappings — 前端编辑弹窗保存时只发 remark/is_enabled/限额等字段，不发 mappings，
+// 若后端整体替换 ServerKey，会把内存里的 mappings 清掉，导致 GET /api/server-keys
+// 返回 mappings:null（虽然 DB 里仍然有映射，/v1/models 也能正常返回）。
+func TestConfig_UpdateServerKey_PreservesMappings(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddProvider(Provider{ID: "p1", Name: "P1", BaseURL: "x", APIKey: "k", Model: "X", IsActive: true, CreatedAt: time.Now().Format(time.RFC3339), Order: 1}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Remark: "old", Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-1")
+
+	if _, err := cfg.AddMapping(keyID, ModelMapping{UserModel: "A", ProviderID: "p1", ProviderModel: "X"}); err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+	if got := cfg.GetServerKeys()[0].Mappings; len(got) != 1 {
+		t.Fatalf("precondition: expected 1 mapping in memory, got %d", len(got))
+	}
+
+	// 前端保存编辑表单时只发这些字段，没有 mappings
+	update := ServerKey{IsEnabled: false, Remark: "new"}
+	if err := cfg.UpdateServerKey(keyID, update); err != nil {
+		t.Fatalf("UpdateServerKey: %v", err)
+	}
+
+	got := cfg.GetServerKeys()[0]
+	if len(got.Mappings) != 1 || got.Mappings[0].UserModel != "A" {
+		t.Fatalf("after UpdateServerKey, Mappings wiped: got %+v, want the original mapping preserved", got.Mappings)
+	}
+	if got.Remark != "new" || got.IsEnabled != false {
+		t.Fatalf("UpdateServerKey did not apply new fields: remark=%q enabled=%v", got.Remark, got.IsEnabled)
 	}
 }
 

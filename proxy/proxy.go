@@ -319,26 +319,15 @@ func proxyHandler(c *gin.Context) {
 				// 请求是 Anthropic 格式，但提供商是 OpenAI 格式，需要转换
 				logger.Info("Converting Anthropic request to OpenAI format")
 				requestBody = convertClaudeToOpenAI(requestBody)
-				// 智能构建 URL，避免路径重复
-				baseURL := strings.TrimSuffix(provider.BaseURL, "/")
-				if strings.HasSuffix(baseURL, "/v1") {
-					targetURL = baseURL + "/chat/completions"
-				} else {
-					targetURL = baseURL + "/v1/chat/completions"
-				}
+				targetURL = provider.ChatEndpointURL()
 			} else if !provider.IsOpenAIFormat && isIncomingOpenAIFormat {
 				// 请求是 OpenAI 格式，但提供商是 Anthropic 格式，需要转换
 				logger.Info("Converting OpenAI request to Anthropic format")
 				requestBody = convertOpenAIToClaudeRequest(requestBody)
-				targetURL = strings.TrimSuffix(provider.BaseURL, "/") + "/v1/messages"
+				targetURL = provider.ChatEndpointURL()
 			} else if provider.IsOpenAIFormat && isIncomingOpenAIFormat {
 				// 已经是 OpenAI 格式但提供商是 OpenAI 格式
-				baseURL := strings.TrimSuffix(provider.BaseURL, "/")
-				if strings.HasSuffix(baseURL, "/v1") {
-					targetURL = baseURL + "/chat/completions"
-				} else {
-					targetURL = baseURL + "/v1/chat/completions"
-				}
+				targetURL = provider.ChatEndpointURL()
 			}
 			// else: 非 OpenAI 格式，保持原 targetURL
 
