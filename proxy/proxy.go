@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"switchai/config"
 	"switchai/history"
@@ -24,7 +25,80 @@ import (
 
 func RegisterRoutes(r *gin.Engine) {
 	// 代理所有 /v1/* 路径
+	// 注意：/v1/models 也走这里，由 proxyHandler 顶部特判分发 —— gin v1.10 的
+	// radix tree 不允许 "/v1/models" 静态路由与 "/v1/*path" 通配符共存。
 	r.Any("/v1/*path", proxyHandler)
+}
+
+// openAIModelEntry 是 OpenAI /v1/models 单条记录的 JSON 形状。
+// 字段名（id / object / created / owned_by）固定：客户端按这些名字解析。
+type openAIModelEntry struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// openAIModelsList 是 OpenAI /v1/models 顶层响应的 JSON 形状。
+type openAIModelsList struct {
+	Object string            `json:"object"`
+	Data   []openAIModelEntry `json:"data"`
+}
+
+// buildModelsListResponse 把该 key 可见的 active 映射转成 OpenAI /v1/models 响应。
+//   - 取 UserModel（客户端能直接调用的名字）作为 id —— 不是 ProviderModel（上游实际名）；
+//     客户端拿到列表后用它去调网关，网关再去路由到对应的 provider_model；
+//   - 同一 user_model 不会重复（DB 唯一约束保证，但仍去重保险）；
+//   - 按 id 排序，让客户端能依赖稳定顺序；
+//   - data 始终返回非 nil 空 slice，handler 序列化时输出 [] 而非 null。
+func buildModelsListResponse(mappings []config.ModelMapping) openAIModelsList {
+	seen := make(map[string]struct{}, len(mappings))
+	for _, m := range mappings {
+		if m.UserModel == "" {
+			continue
+		}
+		seen[m.UserModel] = struct{}{}
+	}
+
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	now := time.Now().Unix()
+	data := make([]openAIModelEntry, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, openAIModelEntry{
+			ID:      id,
+			Object:  "model",
+			Created: now,
+			OwnedBy: "switchai",
+		})
+	}
+	return openAIModelsList{Object: "list", Data: data}
+}
+
+// listModelsForKey 处理 GET /v1/models — 按 Bearer key 返回该 key 可见的、目标 provider
+// 处于 active 状态的映射目标模型。响应形状兼容 OpenAI /v1/models。
+func listModelsForKey(c *gin.Context) {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
+		return
+	}
+	providedKey := authHeader
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		providedKey = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	keyID, isValid := config.GetConfig().ValidateServerKey(providedKey)
+	if !isValid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or disabled server key"})
+		return
+	}
+
+	mappings := config.GetConfig().GetActiveMappingsForKey(keyID)
+	c.JSON(http.StatusOK, buildModelsListResponse(mappings))
 }
 
 // doRequestWithRetry 执行请求并在遇到 "try again" 错误时自动重试
@@ -119,6 +193,13 @@ func resolveRouteTarget(keyID, userModel string) (*config.Provider, string, erro
 func proxyHandler(c *gin.Context) {
 	startTime := time.Now()
 	requestID := uuid.New().String()
+
+	// GET /v1/models 在此特判分发；不能挂 r.GET("/v1/models", ...) 因为 gin v1.10
+	// radix tree 不允许与 r.Any("/v1/*path", ...) 通配共存（启动会 panic）。
+	if c.Request.Method == http.MethodGet && c.Request.URL.Path == "/v1/models" {
+		listModelsForKey(c)
+		return
+	}
 
 	// 验证服务器密钥
 	authHeader := c.GetHeader("Authorization")

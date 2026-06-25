@@ -266,7 +266,7 @@ func (c *Config) Load() error {
 		c.ServerKeys = []ServerKey{}
 	}
 	for i := range c.ServerKeys {
-		c.ServerKeys[i].Mappings = c.LoadMappingsForKey(c.ServerKeys[i].ID)
+		c.ServerKeys[i].Mappings = c.loadMappingsForKeyNoLock(c.ServerKeys[i].ID)
 	}
 
 	return nil
@@ -687,11 +687,16 @@ func (c *Config) ResetTOTP() error {
 	return c.save()
 }
 
-// LoadMappingsForKey 返回指定 key 的所有 mappings
+// LoadMappingsForKey 返回指定 key 的所有 mappings。
+// 公开 API：会加读锁。Load() 内部持有写锁时不能调此方法，请改用 loadMappingsForKeyNoLock。
 func (c *Config) LoadMappingsForKey(keyID string) []ModelMapping {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.loadMappingsForKeyNoLock(keyID)
+}
 
+// loadMappingsForKeyNoLock 是 LoadMappingsForKey 的无锁实现，调用前需持有 c.mu 读或写锁。
+func (c *Config) loadMappingsForKeyNoLock(keyID string) []ModelMapping {
 	rows, err := db.Query("SELECT id, server_key_id, user_model, provider_id, provider_model, created_at FROM model_mappings WHERE server_key_id = ? ORDER BY created_at", keyID)
 	if err != nil {
 		return nil
@@ -742,6 +747,7 @@ func (c *Config) GetMappingForRouting(keyID, userModel string) (*ModelMapping, *
 }
 
 // AddMapping 添加一条映射；UNIQUE 冲突返回 error
+// 同时同步更新内存中 ServerKey.Mappings，保证 GetServerKeys 即时返回新数据。
 func (c *Config) AddMapping(keyID string, m ModelMapping) (ModelMapping, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -759,10 +765,14 @@ func (c *Config) AddMapping(keyID string, m ModelMapping) (ModelMapping, error) 
 	if err != nil {
 		return ModelMapping{}, err
 	}
+
+	if idx := c.findKeyIndex(keyID); idx >= 0 {
+		c.ServerKeys[idx].Mappings = append(c.ServerKeys[idx].Mappings, m)
+	}
 	return m, nil
 }
 
-// UpdateMapping 更新一条映射
+// UpdateMapping 更新一条映射，同时同步更新内存中对应的 ModelMapping。
 func (c *Config) UpdateMapping(keyID, mappingID string, m ModelMapping) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -778,16 +788,80 @@ func (c *Config) UpdateMapping(keyID, mappingID string, m ModelMapping) error {
 	if n == 0 {
 		return fmt.Errorf("mapping not found")
 	}
+
+	if idx := c.findKeyIndex(keyID); idx >= 0 {
+		for j := range c.ServerKeys[idx].Mappings {
+			if c.ServerKeys[idx].Mappings[j].ID == mappingID {
+				c.ServerKeys[idx].Mappings[j].UserModel = m.UserModel
+				c.ServerKeys[idx].Mappings[j].ProviderID = m.ProviderID
+				c.ServerKeys[idx].Mappings[j].ProviderModel = m.ProviderModel
+				break
+			}
+		}
+	}
 	return nil
 }
 
-// DeleteMapping 删除一条映射
+// DeleteMapping 删除一条映射，同时从内存中对应 ServerKey.Mappings 移除。
 func (c *Config) DeleteMapping(keyID, mappingID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	_, err := db.Exec("DELETE FROM model_mappings WHERE id = ? AND server_key_id = ?", mappingID, keyID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if idx := c.findKeyIndex(keyID); idx >= 0 {
+		mappings := c.ServerKeys[idx].Mappings
+		for j := range mappings {
+			if mappings[j].ID == mappingID {
+				c.ServerKeys[idx].Mappings = append(mappings[:j], mappings[j+1:]...)
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// findKeyIndex 返回 ServerKey slice 中 ID 匹配的下标；找不到返回 -1。
+// 调用前需持有 c.mu 写锁。
+func (c *Config) findKeyIndex(id string) int {
+	for i := range c.ServerKeys {
+		if c.ServerKeys[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// GetActiveMappingsForKey 返回该 key 关联的、且目标 provider 处于 active 状态的映射。
+// 与 GetMappingForRouting 行为一致：inactive provider 的映射对调用方不可见。
+// 公开 API：会加读锁。返回 nil 时调用方应按空集合处理（建议 range 前做 len 检查）。
+func (c *Config) GetActiveMappingsForKey(keyID string) []ModelMapping {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	rows, err := db.Query(
+		"SELECT m.id, m.server_key_id, m.user_model, m.provider_id, m.provider_model, m.created_at "+
+			"FROM model_mappings m INNER JOIN providers p ON p.id = m.provider_id "+
+			"WHERE m.server_key_id = ? AND p.is_active = 1 ORDER BY m.created_at",
+		keyID,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []ModelMapping
+	for rows.Next() {
+		var m ModelMapping
+		if err := rows.Scan(&m.ID, &m.ServerKeyID, &m.UserModel, &m.ProviderID, &m.ProviderModel, &m.CreatedAt); err != nil {
+			return out
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // HasMappingsForProvider 返回指定 provider_id 是否被任意 mapping 引用

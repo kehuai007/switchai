@@ -246,3 +246,143 @@ func TestConfig_GetMappingForRouting_ProviderMissing(t *testing.T) {
 		t.Errorf("expected error for missing provider")
 	}
 }
+
+// TestConfig_Load_DoesNotDeadlock 守护 Load() 不会因为重入 c.mu 死锁。
+// 历史：commit e5fdd2c 在 Load() 持写锁时调 LoadMappingsForKey (内部 RLock)，
+// sync.RWMutex 不可重入，导致启动永远卡住。
+func TestConfig_Load_DoesNotDeadlock(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cfg.Load()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Load returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Load deadlocked — same goroutine took write lock and tried to RLock via LoadMappingsForKey")
+	}
+}
+
+// TestConfig_GetActiveMappingsForKey_FiltersInactiveProviders 守护 GetActiveMappingsForKey
+// 只返回目标 provider 处于 active 状态的映射 —— 否则禁用 provider 的模型也会列在
+// /v1/models 里，但实际请求会 500/报错，前后端不一致。
+func TestConfig_GetActiveMappingsForKey_FiltersInactiveProviders(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	pActive := Provider{ID: "p-active", Name: "Active", BaseURL: "x", APIKey: "k",
+		Model: "X", IsActive: true, CreatedAt: time.Now().Format(time.RFC3339), Order: 1}
+	pInactive := Provider{ID: "p-inactive", Name: "Inactive", BaseURL: "x", APIKey: "k",
+		Model: "Y", IsActive: false, CreatedAt: time.Now().Format(time.RFC3339), Order: 2}
+	if err := cfg.AddProvider(pActive); err != nil {
+		t.Fatalf("AddProvider active: %v", err)
+	}
+	if err := cfg.AddProvider(pInactive); err != nil {
+		t.Fatalf("AddProvider inactive: %v", err)
+	}
+
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-1")
+
+	now := time.Now().Format(time.RFC3339)
+	if _, err := cfg.AddMapping(keyID, ModelMapping{
+		UserModel: "u-active", ProviderID: "p-active", ProviderModel: "target-X",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("AddMapping active: %v", err)
+	}
+	if _, err := cfg.AddMapping(keyID, ModelMapping{
+		UserModel: "u-inactive", ProviderID: "p-inactive", ProviderModel: "target-Y",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("AddMapping inactive: %v", err)
+	}
+
+	got := cfg.GetActiveMappingsForKey(keyID)
+	if len(got) != 1 {
+		t.Fatalf("got %d mappings, want 1 (inactive provider's mapping must be filtered out): %+v", len(got), got)
+	}
+	if got[0].UserModel != "u-active" || got[0].ProviderModel != "target-X" {
+		t.Errorf("got %+v, want user_model=u-active provider_model=target-X", got[0])
+	}
+}
+
+// TestConfig_GetActiveMappingsForKey_UnknownKey / 空映射键 返回长度 0（nil 或空 slice 都接受）。
+func TestConfig_GetActiveMappingsForKey_UnknownKey(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := cfg.GetActiveMappingsForKey("nonexistent-key-id")
+	if len(got) != 0 {
+		t.Errorf("got %d mappings, want 0", len(got))
+	}
+}
+
+// TestConfig_MappingCRUD_KeepsInMemoryMappingsInSync 验证 AddMapping/UpdateMapping/DeleteMapping
+// 会同步更新内存中 ServerKey.Mappings，否则 GetServerKeys() 会返回过期数据（前端刷不出来）。
+func TestConfig_MappingCRUD_KeepsInMemoryMappingsInSync(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddProvider(Provider{ID: "p1", Name: "P1", BaseURL: "x", APIKey: "k", Model: "X", IsActive: true, CreatedAt: time.Now().Format(time.RFC3339), Order: 1}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-1", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-1")
+
+	// 初始状态：空 mappings
+	if got := cfg.GetServerKeys()[0].Mappings; len(got) != 0 {
+		t.Fatalf("initial mappings should be empty, got %d", len(got))
+	}
+
+	// AddMapping 应同步到内存
+	created, err := cfg.AddMapping(keyID, ModelMapping{UserModel: "A", ProviderID: "p1", ProviderModel: "X"})
+	if err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+	if got := cfg.GetServerKeys()[0].Mappings; len(got) != 1 || got[0].ID != created.ID {
+		t.Fatalf("after AddMapping, GetServerKeys().Mappings = %+v, want 1 entry with ID %q", got, created.ID)
+	}
+
+	// UpdateMapping 应同步到内存
+	if err := cfg.UpdateMapping(keyID, created.ID, ModelMapping{UserModel: "B", ProviderID: "p1", ProviderModel: "X"}); err != nil {
+		t.Fatalf("UpdateMapping: %v", err)
+	}
+	if got := cfg.GetServerKeys()[0].Mappings; len(got) != 1 || got[0].UserModel != "B" {
+		t.Fatalf("after UpdateMapping, Mappings[0].UserModel = %q, want B", got[0].UserModel)
+	}
+
+	// DeleteMapping 应同步到内存
+	if err := cfg.DeleteMapping(keyID, created.ID); err != nil {
+		t.Fatalf("DeleteMapping: %v", err)
+	}
+	if got := cfg.GetServerKeys()[0].Mappings; len(got) != 0 {
+		t.Fatalf("after DeleteMapping, Mappings should be empty, got %d", len(got))
+	}
+}
