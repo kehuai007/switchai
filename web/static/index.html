@@ -41,6 +41,39 @@
         .provider-stat { text-align: center; }
         .provider-stat-value { font-size: 16px; font-weight: bold; color: #333; }
         .provider-stat-label { font-size: 12px; color: #666; }
+        .model-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+            max-height: 22px;
+            overflow: hidden;
+            cursor: help;
+            transition: max-height 0.2s ease;
+            align-items: center;
+        }
+        .model-chips:hover {
+            max-height: 200px;
+            overflow: visible;
+        }
+        .model-chip {
+            background: #edf2f7;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            color: #2d3748;
+            white-space: nowrap;
+            line-height: 1.4;
+        }
+        .model-chip-more {
+            background: #cbd5e0;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            color: #1a202c;
+            font-weight: 600;
+            white-space: nowrap;
+            line-height: 1.4;
+        }
         .provider-item-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: nowrap; margin-left: auto; }
         button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
         .btn-primary { background: #667eea; color: white; }
@@ -1204,6 +1237,34 @@
             updateStats(data);
         }
 
+        function renderModelChips(modelStr) {
+            const models = (modelStr || '').split(';').map(s => s.trim()).filter(s => s);
+            if (models.length === 0) {
+                return `<div class="provider-stat">
+                    <div class="provider-stat-value" style="color: #999;">—</div>
+                    <div class="provider-stat-label">模型</div>
+                </div>`;
+            }
+            const visible = models.slice(0, 2);
+            const more = models.length - visible.length;
+            const chips = visible.map(m => `<span class="model-chip">${escapeHtml(m)}</span>`).join('');
+            const moreChip = more > 0 ? `<span class="model-chip-more">+${more}</span>` : '';
+            return `<div class="provider-stat">
+                <div class="provider-stat-value">
+                    <div class="model-chips" title="${models.length} 个模型，悬停展开">
+                        ${chips}${moreChip}
+                    </div>
+                </div>
+                <div class="provider-stat-label">模型 (${models.length})</div>
+            </div>`;
+        }
+
+        function escapeHtml(str) {
+            return String(str).replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[ch]));
+        }
+
         function renderProviders() {
             const list = document.getElementById('providerList');
             if (providers.length === 0) {
@@ -1224,10 +1285,7 @@
                         </div>
                     </div>
                     <div class="provider-item-stats">
-                        <div class="provider-stat">
-                            <div class="provider-stat-value">${p.model}</div>
-                            <div class="provider-stat-label">模型</div>
-                        </div>
+                        ${renderModelChips(p.model)}
                         <div class="provider-stat">
                             <div class="provider-stat-value">${p.is_openai_format ? 'OpenAI' : 'Anthropic'}</div>
                             <div class="provider-stat-label">格式</div>
