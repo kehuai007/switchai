@@ -952,12 +952,10 @@ func deleteKeyMapping(c *gin.Context) {
 }
 
 // Anthropic 没有 models 接口 — fallback 到内置清单
+// 最后更新：2026-06-25 — Anthropic 当前在售模型
 var anthropicKnownModels = []string{
 	"claude-sonnet-4-5",
-	"claude-sonnet-4-6",
 	"claude-opus-4-0",
-	"claude-opus-4-1",
-	"claude-haiku-4-5",
 	"claude-3-5-sonnet-20241022",
 	"claude-3-5-haiku-20241022",
 	"claude-3-opus-20240229",
@@ -972,8 +970,8 @@ func fetchProviderModels(c *gin.Context) {
 		return
 	}
 
-	// Anthropic 检测：BaseURL 含 "anthropic" 即视为 anthropic 协议
-	isAnthropic := strings.Contains(strings.ToLower(provider.BaseURL), "anthropic")
+	// 使用 Provider.IsOpenAIFormat 字段判断，与 testProvider / proxy handler 保持一致
+	isAnthropic := !provider.IsOpenAIFormat
 
 	// 构造目标 URL — BaseURL 可能已含 /v1，需处理
 	baseURL := strings.TrimRight(provider.BaseURL, "/")
