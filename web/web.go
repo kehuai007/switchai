@@ -91,6 +91,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.DELETE("/providers/:id", deleteProvider)
 		api.POST("/providers/:id/activate", activateProvider)
 		api.POST("/providers/:id/test", testProvider)
+		api.POST("/providers/:id/fetch-models", fetchProviderModels)
 
 		// 统计信息
 		api.GET("/stats", getStats)
@@ -948,4 +949,102 @@ func deleteKeyMapping(c *gin.Context) {
 	}
 	broadcastConfigChange(c, "mapping_deleted", mappingID)
 	c.JSON(http.StatusOK, gin.H{"message": "mapping deleted"})
+}
+
+// Anthropic 没有 models 接口 — fallback 到内置清单
+var anthropicKnownModels = []string{
+	"claude-sonnet-4-5",
+	"claude-sonnet-4-6",
+	"claude-opus-4-0",
+	"claude-opus-4-1",
+	"claude-haiku-4-5",
+	"claude-3-5-sonnet-20241022",
+	"claude-3-5-haiku-20241022",
+	"claude-3-opus-20240229",
+}
+
+func fetchProviderModels(c *gin.Context) {
+	id := c.Param("id")
+	cfg := config.GetConfig()
+	provider := cfg.GetProviderByID(id)
+	if provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Provider not found"})
+		return
+	}
+
+	// Anthropic 检测：BaseURL 含 "anthropic" 即视为 anthropic 协议
+	isAnthropic := strings.Contains(strings.ToLower(provider.BaseURL), "anthropic")
+
+	// 构造目标 URL — BaseURL 可能已含 /v1，需处理
+	baseURL := strings.TrimRight(provider.BaseURL, "/")
+	var modelsURL string
+	if strings.HasSuffix(baseURL, "/v1") {
+		modelsURL = baseURL + "/models"
+	} else {
+		modelsURL = baseURL + "/v1/models"
+	}
+
+	// 先尝试调用 /v1/models（OpenAI 兼容协议）
+	var models []string
+	var fetchErr error
+	if !isAnthropic {
+		req, err := http.NewRequest("GET", modelsURL, nil)
+		if err != nil {
+			fetchErr = err
+		} else {
+			req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+			client := &http.Client{Timeout: 30 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				fetchErr = err
+			} else {
+				defer resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					body, _ := io.ReadAll(resp.Body)
+					var parsed struct {
+						Data []struct {
+							ID string `json:"id"`
+						} `json:"data"`
+					}
+					if err := json.Unmarshal(body, &parsed); err != nil {
+						fetchErr = err
+					} else {
+						for _, m := range parsed.Data {
+							if m.ID != "" {
+								models = append(models, m.ID)
+							}
+						}
+					}
+				} else {
+					body, _ := io.ReadAll(resp.Body)
+					fetchErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+				}
+			}
+		}
+	} else {
+		fetchErr = fmt.Errorf("anthropic does not expose models endpoint")
+	}
+
+	// Fallback：调用失败 → Anthropic 用内置清单，其他报错给用户
+	if len(models) == 0 {
+		if isAnthropic {
+			models = anthropicKnownModels
+		} else {
+			c.JSON(http.StatusBadGateway, gin.H{
+				"error": fmt.Sprintf("failed to fetch models: %v", fetchErr),
+			})
+			return
+		}
+	}
+
+	joined := strings.Join(models, ";")
+	source := "api"
+	if isAnthropic {
+		source = "builtin"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"models": joined,
+		"count":  len(models),
+		"source": source,
+	})
 }
