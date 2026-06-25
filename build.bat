@@ -44,7 +44,10 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr :7777') do (
     taskkill /F /PID %%a >nul 2>nul
 )
 echo   Checking image name switchai-windows-amd64.exe (handles other ports + zombie instances)...
+tasklist | findstr switchai
 taskkill /F /IM switchai-windows-amd64.exe >nul 2>nul
+echo   Cleaning up potential stale SQLite journal file (in case of journal mode)...
+del dist\.switchai-windows-amd64\config.db-journal 2>nul
 echo   Done.
 echo.
 
