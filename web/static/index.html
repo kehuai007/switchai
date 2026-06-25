@@ -382,6 +382,7 @@
                                 <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">用户模型名</th>
                                 <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">API服务商</th>
                                 <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">服务商模型</th>
+                                <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0; width: 80px;">状态</th>
                                 <th style="text-align: left; padding: 8px; border: 1px solid #e2e8f0;">操作</th>
                             </tr>
                         </thead>
@@ -891,6 +892,7 @@
         function addMappingRow(existing) {
             const tbody = document.getElementById('mappingsTbody');
             const tr = document.createElement('tr');
+            tr.dataset.id = existing ? existing.id : '';
 
             const userModelVal = existing ? existing.user_model : '';
             const providerIdVal = existing ? existing.provider_id : '';
@@ -911,17 +913,100 @@
                         ${renderProviderModelOptions(providerIdVal, providerModelVal)}
                     </select>
                 </td>
+                <td class="mapping-status" style="padding: 6px; border: 1px solid #e2e8f0; font-size: 11px; color: #666;"></td>
                 <td style="padding: 6px; border: 1px solid #e2e8f0;">
-                    <button type="button" class="btn-danger" onclick="this.closest('tr').remove()">删除</button>
+                    <button type="button" class="btn-danger" onclick="deleteMappingRow(this.closest('tr'))">删除</button>
                 </td>
             `;
 
-            tr.querySelector('.mapping-provider-id').addEventListener('change', function() {
-                const modelSelect = tr.querySelector('.mapping-provider-model');
+            const userModelInput = tr.querySelector('.mapping-user-model');
+            const providerSelect = tr.querySelector('.mapping-provider-id');
+            const modelSelect = tr.querySelector('.mapping-provider-model');
+            const statusCell = tr.querySelector('.mapping-status');
+
+            function showStatus(text, color) {
+                statusCell.innerHTML = `<span style="color: ${color};">${text}</span>`;
+            }
+
+            async function autoSave() {
+                const keyId = document.getElementById('editKeyId').value;
+                const userModel = userModelInput.value.trim();
+                const providerId = providerSelect.value;
+                const providerModel = modelSelect.value;
+
+                // 必填字段未填则不保存
+                if (!userModel || !providerId || !providerModel) {
+                    showStatus('', '#666');
+                    return;
+                }
+
+                showStatus('保存中...', '#666');
+
+                try {
+                    if (tr.dataset.id) {
+                        // 已有 ID — PUT 更新
+                        const res = await fetch(`/api/server-keys/${keyId}/mappings/${tr.dataset.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ user_model: userModel, provider_id: providerId, provider_model: providerModel }),
+                        });
+                        if (res.ok) {
+                            showStatus('✓ 已保存', '#38a169');
+                            setTimeout(() => { if (statusCell.textContent.includes('已保存')) showStatus('', '#666'); }, 1500);
+                        } else {
+                            const err = await res.json().catch(() => ({}));
+                            showStatus('✗ ' + (err.error || '保存失败'), '#c53030');
+                        }
+                    } else {
+                        // 新建 — POST
+                        const res = await fetch(`/api/server-keys/${keyId}/mappings`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ user_model: userModel, provider_id: providerId, provider_model: providerModel }),
+                        });
+                        if (res.ok) {
+                            const created = await res.json();
+                            tr.dataset.id = created.id; // 标记为已保存，下次修改会 PUT
+                            showStatus('✓ 已保存', '#38a169');
+                            setTimeout(() => { if (statusCell.textContent.includes('已保存')) showStatus('', '#666'); }, 1500);
+                        } else {
+                            const err = await res.json().catch(() => ({}));
+                            showStatus('✗ ' + (err.error || '保存失败'), '#c53030');
+                        }
+                    }
+                } catch (err) {
+                    showStatus('✗ ' + err.message, '#c53030');
+                }
+            }
+
+            userModelInput.addEventListener('blur', autoSave);
+            providerSelect.addEventListener('change', function() {
                 modelSelect.innerHTML = renderProviderModelOptions(this.value, '');
+                autoSave();
             });
+            modelSelect.addEventListener('change', autoSave);
 
             tbody.appendChild(tr);
+        }
+
+        // deleteMappingRow 立即删除（不需点 Save）
+        async function deleteMappingRow(tr) {
+            const keyId = document.getElementById('editKeyId').value;
+            const mappingId = tr.dataset.id;
+            if (mappingId) {
+                try {
+                    const res = await fetch(`/api/server-keys/${keyId}/mappings/${mappingId}`, { method: 'DELETE' });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        alert('删除失败: ' + (err.error || '未知错误'));
+                        return;
+                    }
+                } catch (err) {
+                    alert('删除失败: ' + err.message);
+                    return;
+                }
+            }
+            tr.remove();
         }
 
         function renderProviderModelOptions(providerId, selected) {
@@ -1485,9 +1570,6 @@
             e.preventDefault();
             const formData = new FormData(e.target);
             const id = formData.get('id');
-            const key = serverKeys.find(k => k.id === id);
-            if (!key) return;
-            const existingMappings = key.mappings || [];
 
             const data = {
                 remark: formData.get('remark') || '',
@@ -1504,30 +1586,11 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
                 });
-
                 if (!res.ok) {
                     const error = await res.json();
                     alert('更新失败: ' + (error.error || '未知错误'));
                     return;
                 }
-
-                // Sync mappings: delete all existing, then add current rows
-                for (const m of existingMappings) {
-                    await fetch(`/api/server-keys/${id}/mappings/${m.id}`, { method: 'DELETE' });
-                }
-                const rows = document.querySelectorAll('#mappingsTbody tr');
-                for (const row of rows) {
-                    const userModel = row.querySelector('.mapping-user-model').value.trim();
-                    const providerId = row.querySelector('.mapping-provider-id').value;
-                    const providerModel = row.querySelector('.mapping-provider-model').value;
-                    if (!userModel || !providerId || !providerModel) continue;
-                    await fetch(`/api/server-keys/${id}/mappings`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ user_model: userModel, provider_id: providerId, provider_model: providerModel }),
-                    });
-                }
-
                 hideEditKeyModal();
                 await loadServerKeys();
             } catch (err) {
