@@ -91,6 +91,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.DELETE("/providers/:id", deleteProvider)
 		api.POST("/providers/:id/activate", activateProvider)
 		api.POST("/providers/:id/test", testProvider)
+		api.POST("/providers/fetch-models", fetchModelsByCredentials)
 		api.POST("/providers/:id/fetch-models", fetchProviderModels)
 
 		// 统计信息
@@ -961,6 +962,63 @@ var anthropicKnownModels = []string{
 	"claude-3-opus-20240229",
 }
 
+// fetchOpenAIModels 调用 OpenAI 兼容的 /v1/models 接口
+func fetchOpenAIModels(modelsURL, apiKey string) ([]string, error) {
+	req, err := http.NewRequest("GET", modelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	var models []string
+	for _, m := range parsed.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+	return models, nil
+}
+
+// resolveModels 根据 URL 和 is_openai_format 决定走 API 还是 Anthropic builtin
+func resolveModels(baseURL, apiKey string, isOpenAIFormat bool) (models []string, source string, err error) {
+	base := strings.TrimRight(baseURL, "/")
+	var modelsURL string
+	if strings.HasSuffix(base, "/v1") {
+		modelsURL = base + "/models"
+	} else {
+		modelsURL = base + "/v1/models"
+	}
+
+	if !isOpenAIFormat {
+		// Anthropic 格式 — 直接用内置清单
+		return anthropicKnownModels, "builtin", nil
+	}
+
+	models, fetchErr := fetchOpenAIModels(modelsURL, apiKey)
+	if fetchErr != nil {
+		return nil, "", fetchErr
+	}
+	return models, "api", nil
+}
+
+// fetchProviderModels 处理 POST /api/providers/:id/fetch-models — 编辑弹窗用
 func fetchProviderModels(c *gin.Context) {
 	id := c.Param("id")
 	cfg := config.GetConfig()
@@ -970,79 +1028,37 @@ func fetchProviderModels(c *gin.Context) {
 		return
 	}
 
-	// 使用 Provider.IsOpenAIFormat 字段判断，与 testProvider / proxy handler 保持一致
-	isAnthropic := !provider.IsOpenAIFormat
-
-	// 构造目标 URL — BaseURL 可能已含 /v1，需处理
-	baseURL := strings.TrimRight(provider.BaseURL, "/")
-	var modelsURL string
-	if strings.HasSuffix(baseURL, "/v1") {
-		modelsURL = baseURL + "/models"
-	} else {
-		modelsURL = baseURL + "/v1/models"
+	models, source, err := resolveModels(provider.BaseURL, provider.APIKey, provider.IsOpenAIFormat)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch models: %v", err)})
+		return
 	}
-
-	// 先尝试调用 /v1/models（OpenAI 兼容协议）
-	var models []string
-	var fetchErr error
-	if !isAnthropic {
-		req, err := http.NewRequest("GET", modelsURL, nil)
-		if err != nil {
-			fetchErr = err
-		} else {
-			req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-			client := &http.Client{Timeout: 30 * time.Second}
-			resp, err := client.Do(req)
-			if err != nil {
-				fetchErr = err
-			} else {
-				defer resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					body, _ := io.ReadAll(resp.Body)
-					var parsed struct {
-						Data []struct {
-							ID string `json:"id"`
-						} `json:"data"`
-					}
-					if err := json.Unmarshal(body, &parsed); err != nil {
-						fetchErr = err
-					} else {
-						for _, m := range parsed.Data {
-							if m.ID != "" {
-								models = append(models, m.ID)
-							}
-						}
-					}
-				} else {
-					body, _ := io.ReadAll(resp.Body)
-					fetchErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
-				}
-			}
-		}
-	} else {
-		fetchErr = fmt.Errorf("anthropic does not expose models endpoint")
-	}
-
-	// Fallback：调用失败 → Anthropic 用内置清单，其他报错给用户
-	if len(models) == 0 {
-		if isAnthropic {
-			models = anthropicKnownModels
-		} else {
-			c.JSON(http.StatusBadGateway, gin.H{
-				"error": fmt.Sprintf("failed to fetch models: %v", fetchErr),
-			})
-			return
-		}
-	}
-
 	joined := strings.Join(models, ";")
-	source := "api"
-	if isAnthropic {
-		source = "builtin"
+	c.JSON(http.StatusOK, gin.H{"models": joined, "count": len(models), "source": source})
+}
+
+// fetchModelsByCredentials 处理 POST /api/providers/fetch-models — 添加弹窗用
+// body: { base_url, api_key, is_openai_format }
+func fetchModelsByCredentials(c *gin.Context) {
+	var req struct {
+		BaseURL        string `json:"base_url"`
+		APIKey         string `json:"api_key"`
+		IsOpenAIFormat bool   `json:"is_openai_format"`
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"models": joined,
-		"count":  len(models),
-		"source": source,
-	})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.BaseURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "base_url required"})
+		return
+	}
+
+	models, source, err := resolveModels(req.BaseURL, req.APIKey, req.IsOpenAIFormat)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch models: %v", err)})
+		return
+	}
+	joined := strings.Join(models, ";")
+	c.JSON(http.StatusOK, gin.H{"models": joined, "count": len(models), "source": source})
 }
