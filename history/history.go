@@ -273,6 +273,7 @@ func (h *History) handleBroadcast() {
 			"output_tokens": record.OutputTokens,
 			"total_tokens": record.TotalTokens,
 			"cost":         record.Cost,
+			"retry_count":  record.RetryCount,
 		}
 		for client := range clients {
 			err := client.WriteJSON(msg)
