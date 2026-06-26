@@ -667,3 +667,56 @@ func TestConfig_UpdateServerKey_RejectsDuplicateKey(t *testing.T) {
 		t.Errorf("setting key to self should succeed, got %v", err)
 	}
 }
+
+// TestGenerateServerKeyString_PureGeneration 验证纯生成函数只返回值、不写 DB。
+// 这是 web handler /server-keys/generate 的行为契约——前端"重新生成"按钮
+// 只想要一个新 key 填回 input，绝不能偷偷加一条到密钥列表。
+func TestGenerateServerKeyString_PureGeneration(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	before := len(cfg.GetServerKeys())
+
+	v, err := cfg.GenerateServerKeyString()
+	if err != nil {
+		t.Fatalf("GenerateServerKeyString: %v", err)
+	}
+	if err := validateServerKeyFormat(v); err != nil {
+		t.Errorf("returned value %q does not pass format check: %v", v, err)
+	}
+
+	after := len(cfg.GetServerKeys())
+	if after != before {
+		t.Errorf("GenerateServerKeyString polluted DB: before=%d, after=%d", before, after)
+	}
+}
+
+// TestGenerateServerKey_StillAddsToList 守护 GenerateServerKey 的原始语义不变
+// （proxy 测试依赖它把 key 写入 DB 后再做 AddMapping）。
+func TestGenerateServerKey_StillAddsToList(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	before := len(cfg.GetServerKeys())
+
+	v, err := cfg.GenerateServerKey()
+	if err != nil {
+		t.Fatalf("GenerateServerKey: %v", err)
+	}
+	if err := validateServerKeyFormat(v); err != nil {
+		t.Errorf("returned value %q does not pass format check: %v", v, err)
+	}
+
+	after := len(cfg.GetServerKeys())
+	if after != before+1 {
+		t.Errorf("GenerateServerKey should add one entry: before=%d, after=%d", before, after)
+	}
+}

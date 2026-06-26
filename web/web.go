@@ -358,7 +358,7 @@ func deleteServerKey(c *gin.Context) {
 
 // generateServerKey 生成新的服务器密钥
 func generateServerKey(c *gin.Context) {
-	keyStr, err := config.GetConfig().GenerateServerKey()
+	keyStr, err := config.GetConfig().GenerateServerKeyString()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成密钥失败"})
 		return

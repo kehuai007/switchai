@@ -503,12 +503,10 @@ func (c *Config) sortProviders() {
 	})
 }
 
-// GenerateServerKey 生成新的服务器密钥并添加到列表
-func (c *Config) GenerateServerKey() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 生成 sk- 开头 + 16位随机字符
+// generateServerKeyBody returns a fresh sk- + 16 chars [a-zA-Z0-9] string.
+// Pure: no DB side effects. Used by both GenerateServerKey (which persists) and
+// GenerateServerKeyString (which just hands the value back to the caller).
+func (c *Config) generateServerKeyBody() (string, error) {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
@@ -518,6 +516,25 @@ func (c *Config) GenerateServerKey() (string, error) {
 	for _, b := range bytes {
 		keyStr += string(chars[int(b)%len(chars)])
 	}
+	return keyStr, nil
+}
+
+// GenerateServerKeyString returns a fresh server key value without touching the DB.
+// Use this when the caller only wants a candidate key (e.g. the edit-modal
+// "regenerate" button), not a persisted entry.
+func (c *Config) GenerateServerKeyString() (string, error) {
+	return c.generateServerKeyBody()
+}
+
+// GenerateServerKey 生成新的服务器密钥并添加到列表
+func (c *Config) GenerateServerKey() (string, error) {
+	keyStr, err := c.generateServerKeyBody()
+	if err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// 查找最大序号
 	maxOrder := 0
