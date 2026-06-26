@@ -133,6 +133,30 @@ var db *sql.DB
 // that doesn't exist in the providers list. Use errors.Is to detect.
 var ErrConfiguredProviderMissing = errors.New("configured provider missing")
 
+// ErrServerKeyDuplicate is returned when an edited ServerKey.Key collides with
+// another existing ServerKey. Use errors.Is to detect.
+var ErrServerKeyDuplicate = errors.New("密钥已被其他密钥使用")
+
+// validateServerKeyFormat enforces sk- prefix + 16 chars in [a-zA-Z0-9].
+// Used by edit path to keep auto-generated format invariant intact.
+func validateServerKeyFormat(key string) error {
+	const prefix = "sk-"
+	const bodyLen = 16
+	if !strings.HasPrefix(key, prefix) {
+		return fmt.Errorf("密钥必须以 %q 开头", prefix)
+	}
+	body := key[len(prefix):]
+	if len(body) != bodyLen {
+		return fmt.Errorf("密钥主体长度必须为 %d", bodyLen)
+	}
+	for _, r := range body {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return fmt.Errorf("密钥主体只能包含字母和数字")
+		}
+	}
+	return nil
+}
+
 // getDBPath 返回数据库文件路径
 func getDBPath() string {
 	return appdata.GetConfigPath("config.db")
@@ -581,16 +605,29 @@ func (c *Config) UpdateServerKey(id string, key ServerKey) error {
 	defer c.mu.Unlock()
 
 	for i := range c.ServerKeys {
-		if c.ServerKeys[i].ID == id {
-			// 保留原有序号和创建时间
-			key.ID = id
-			key.CreatedAt = c.ServerKeys[i].CreatedAt
-			key.Order = c.ServerKeys[i].Order
-			key.Key = c.ServerKeys[i].Key    // 不允许修改密钥值
-			key.Mappings = c.ServerKeys[i].Mappings // 前端编辑表单不发 mappings，整体替换会清空内存里的映射
-			c.ServerKeys[i] = key
-			return c.save()
+		if c.ServerKeys[i].ID != id {
+			continue
 		}
+		// key.Key == "" 表示前端未传，沿用旧值；非空则必须校验且唯一。
+		if key.Key == "" {
+			key.Key = c.ServerKeys[i].Key
+		} else {
+			if err := validateServerKeyFormat(key.Key); err != nil {
+				return err
+			}
+			for j := range c.ServerKeys {
+				if j != i && c.ServerKeys[j].Key == key.Key {
+					return ErrServerKeyDuplicate
+				}
+			}
+		}
+		// 保留原有序号和创建时间
+		key.ID = id
+		key.CreatedAt = c.ServerKeys[i].CreatedAt
+		key.Order = c.ServerKeys[i].Order
+		key.Mappings = c.ServerKeys[i].Mappings // 前端编辑表单不发 mappings，整体替换会清空内存里的映射
+		c.ServerKeys[i] = key
+		return c.save()
 	}
 
 	return nil

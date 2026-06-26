@@ -2,6 +2,7 @@ package config
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -500,5 +501,169 @@ func TestConfig_MappingCRUD_KeepsInMemoryMappingsInSync(t *testing.T) {
 	}
 	if got := cfg.GetServerKeys()[0].Mappings; len(got) != 0 {
 		t.Fatalf("after DeleteMapping, Mappings should be empty, got %d", len(got))
+	}
+}
+
+// TestValidateServerKeyFormat 守护 ServerKey 格式约束：sk- 前缀 + 16 位 [a-zA-Z0-9]。
+// 编辑 API 密钥的入口校验，前后端都依赖这个函数的结果。
+func TestValidateServerKeyFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"valid mixed", "sk-AbCdEfGh12345678", false},
+		{"valid lowercase", "sk-abcdefghijklmnop", false},
+		{"valid digits", "sk-0123456789012345", false},
+		{"missing prefix", "xx-AbCdEfGh12345678", true},
+		{"empty prefix", "AbCdEfGh12345678xx", true},
+		{"body too short", "sk-AbCdEfGh1234567", true},
+		{"body too long", "sk-AbCdEfGh123456789", true},
+		{"body exactly 15", "sk-123456789012345", true},
+		{"body contains dash", "sk-AbCdEfGh12345-78", true},
+		{"body contains underscore", "sk-AbCdEfGh12345_78", true},
+		{"body contains space", "sk-AbCdEfGh12345 78", true},
+		{"body contains chinese", "sk-AbCdEfGh中文1234", true},
+		{"body contains zero-width", "sk-AbCdEfGh​123456", true},
+		{"empty string", "", true},
+		{"only prefix", "sk-", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateServerKeyFormat(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateServerKeyFormat(%q) err = %v, wantErr = %v", tt.key, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_UpdateServerKey_AcceptsCustomKey 验证编辑时可以传入合法的新 key 并持久化。
+func TestConfig_UpdateServerKey_AcceptsCustomKey(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-OldOne0000000000", IsEnabled: true, Remark: "old", Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-OldOne0000000000")
+
+	update := ServerKey{Key: "sk-NewOne0000000000", IsEnabled: true, Remark: "new"}
+	if err := cfg.UpdateServerKey(keyID, update); err != nil {
+		t.Fatalf("UpdateServerKey: %v", err)
+	}
+
+	got := cfg.GetServerKeys()[0]
+	if got.Key != "sk-NewOne0000000000" {
+		t.Errorf("Key = %q, want %q", got.Key, "sk-NewOne0000000000")
+	}
+	if got.Remark != "new" {
+		t.Errorf("Remark = %q, want %q", got.Remark, "new")
+	}
+}
+
+// TestConfig_UpdateServerKey_EmptyKeyPreservesOld 空字符串视为未改，保持原值。
+func TestConfig_UpdateServerKey_EmptyKeyPreservesOld(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-KeepMe0000000000", IsEnabled: true, Remark: "old", Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-KeepMe0000000000")
+
+	update := ServerKey{Key: "", IsEnabled: false, Remark: "new"}
+	if err := cfg.UpdateServerKey(keyID, update); err != nil {
+		t.Fatalf("UpdateServerKey: %v", err)
+	}
+
+	got := cfg.GetServerKeys()[0]
+	if got.Key != "sk-KeepMe0000000000" {
+		t.Errorf("Key = %q, want preserved %q", got.Key, "sk-KeepMe0000000000")
+	}
+	if got.Remark != "new" || got.IsEnabled != false {
+		t.Errorf("non-key fields should update, got remark=%q enabled=%v", got.Remark, got.IsEnabled)
+	}
+}
+
+// TestConfig_UpdateServerKey_RejectsInvalidFormat 非法格式必须被拒绝。
+func TestConfig_UpdateServerKey_RejectsInvalidFormat(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-OldOne0000000000", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey: %v", err)
+	}
+	keyID := lookupKeyIDByKey(cfg, "sk-OldOne0000000000")
+
+	bad := []string{
+		"xx-abcdefghijklmnop", // 错前缀
+		"sk-shortkey",         // 短
+		"sk-With-Dash0000000", // 含 dash
+	}
+	for _, k := range bad {
+		err := cfg.UpdateServerKey(keyID, ServerKey{Key: k})
+		if err == nil {
+			t.Errorf("UpdateServerKey(%q) should fail, got nil", k)
+		}
+		if errors.Is(err, ErrServerKeyDuplicate) {
+			t.Errorf("UpdateServerKey(%q) returned duplicate error but format is invalid", k)
+		}
+	}
+
+	// 拒绝后，原值必须保留
+	got := cfg.GetServerKeys()[0]
+	if got.Key != "sk-OldOne0000000000" {
+		t.Errorf("after rejected update, Key = %q, want preserved %q", got.Key, "sk-OldOne0000000000")
+	}
+}
+
+// TestConfig_UpdateServerKey_RejectsDuplicateKey 与其他 ServerKey 重复时返回 ErrServerKeyDuplicate。
+func TestConfig_UpdateServerKey_RejectsDuplicateKey(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-FirstKey00000000", IsEnabled: true, Order: 1}); err != nil {
+		t.Fatalf("AddServerKey first: %v", err)
+	}
+	if err := cfg.AddServerKey(ServerKey{Key: "sk-SecondKey0000000", IsEnabled: true, Order: 2}); err != nil {
+		t.Fatalf("AddServerKey second: %v", err)
+	}
+	firstID := lookupKeyIDByKey(cfg, "sk-FirstKey00000000")
+	secondID := lookupKeyIDByKey(cfg, "sk-SecondKey0000000")
+
+	// 把 second 改成 first 的 key，期望 ErrServerKeyDuplicate
+	err := cfg.UpdateServerKey(secondID, ServerKey{Key: "sk-FirstKey00000000"})
+	if err == nil {
+		t.Fatalf("expected duplicate error, got nil")
+	}
+	if !errors.Is(err, ErrServerKeyDuplicate) {
+		t.Errorf("expected ErrServerKeyDuplicate, got %v", err)
+	}
+
+	// 拒绝后 second 的 key 必须保留
+	if got := cfg.GetServerKeyByID(secondID); got.Key != "sk-SecondKey0000000" {
+		t.Errorf("after rejected update, Key = %q, want preserved %q", got.Key, "sk-SecondKey0000000")
+	}
+
+	// 改回自己的 key 必须成功（不与"自己"重复）
+	if err := cfg.UpdateServerKey(firstID, ServerKey{Key: "sk-FirstKey00000000"}); err != nil {
+		t.Errorf("setting key to self should succeed, got %v", err)
 	}
 }

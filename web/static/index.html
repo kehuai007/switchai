@@ -397,9 +397,11 @@
                 <div class="form-group">
                     <label>密钥</label>
                     <div style="display: flex; align-items: center; gap: 10px;">
-                        <span id="editKeyValueDisplay" style="font-family: monospace; color: #667eea; flex: 1;"></span>
+                        <input type="text" id="editKeyInput" style="font-family: monospace; color: #667eea; flex: 1; padding: 6px 10px; border: 1px solid #cbd5e0; border-radius: 4px;" placeholder="sk- + 16 位字母数字" />
+                        <button type="button" class="btn-primary" onclick="regenerateEditKey()" style="padding: 5px 10px; font-size: 12px;">重新生成</button>
                         <button type="button" class="btn-primary" onclick="toggleEditKeyVisibility()" style="padding: 5px 10px; font-size: 12px;">显示/隐藏</button>
                     </div>
+                    <div style="font-size: 12px; color: #888; margin-top: 4px;">格式：sk- + 16 位 [a-zA-Z0-9]，共 19 字符</div>
                 </div>
                 <div class="form-group">
                     <label>备注</label>
@@ -869,24 +871,33 @@
             }
         }
 
-        let currentEditKey = '';
+        async function regenerateEditKey() {
+            try {
+                const res = await fetch('/api/server-keys/generate', { method: 'POST' });
+                const j = await res.json();
+                if (j.server_key) {
+                    const input = document.getElementById('editKeyInput');
+                    input.value = j.server_key;
+                    input.type = 'text';
+                }
+            } catch (err) {
+                alert('重新生成失败: ' + err.message);
+            }
+        }
 
         function toggleEditKeyVisibility() {
-            const display = document.getElementById('editKeyValueDisplay');
-            if (display.textContent === '•'.repeat(currentEditKey.length)) {
-                display.textContent = currentEditKey;
-            } else {
-                display.textContent = '•'.repeat(currentEditKey.length);
-            }
+            const input = document.getElementById('editKeyInput');
+            input.type = input.type === 'text' ? 'password' : 'text';
         }
 
         function editKey(id) {
             const key = serverKeys.find(k => k.id === id);
             if (!key) return;
 
-            currentEditKey = key.key;
+            const input = document.getElementById('editKeyInput');
+            input.value = key.key;
+            input.type = 'text';
             document.getElementById('editKeyId').value = key.id;
-            document.getElementById('editKeyValueDisplay').textContent = '•'.repeat(key.key.length);
             document.getElementById('editKeyRemark').value = key.remark || '';
             document.getElementById('editKeyEnabled').checked = key.is_enabled;
             document.getElementById('editKeyDailyReqLimit').value = key.daily_req_limit || 0;
@@ -1722,6 +1733,7 @@
             const id = formData.get('id');
 
             const data = {
+                key: (document.getElementById('editKeyInput').value || '').trim(),
                 remark: formData.get('remark') || '',
                 is_enabled: formData.get('is_enabled') === 'on',
                 daily_req_limit: parseInt(formData.get('daily_req_limit')) || 0,
