@@ -452,6 +452,10 @@
                                 <div class="detail-value">${formatDuration(record.duration_ms)}</div>
                             </div>
                             <div class="detail-item">
+                                <div class="detail-label">重试次数</div>
+                                <div class="detail-value">${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</div>
+                            </div>
+                            <div class="detail-item">
                                 <div class="detail-label">请求大小</div>
                                 <div class="detail-value">${formatBytes(record.request_size || 0)}</div>
                             </div>
