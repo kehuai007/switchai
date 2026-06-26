@@ -621,7 +621,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	cost := calculateCost(model, inputTokens, outputTokens)
 
 	// 始终记录统计信息
-	stats.RecordUsage(provider.ID, provider.Name, model, "stream", "claude", inputTokens, outputTokens, cost, duration, timeToFirst, keyID, clientIP)
+	stats.RecordUsage(provider.ID, provider.Name, model, userModel, "stream", "claude", inputTokens, outputTokens, cost, duration, timeToFirst, keyID, clientIP)
 
 	// Save to history
 	history.AddRecord(history.RequestRecord{
@@ -750,7 +750,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	// 记录统计信息
 	duration := time.Since(startTime).Milliseconds()
 	cost = calculateCost(model, inputTokens, outputTokens)
-	stats.RecordUsage(provider.ID, provider.Name, model, "non-stream", "claude",
+	stats.RecordUsage(provider.ID, provider.Name, model, userModel, "non-stream", "claude",
 		inputTokens, outputTokens, cost, duration, 0, keyID, clientIP)
 
 	// Save to history

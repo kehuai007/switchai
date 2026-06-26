@@ -130,6 +130,7 @@
                         <th>IP</th>
                         <th>Key</th>
                         <th>供应商</th>
+                        <th>用户模型</th>
                         <th>模型</th>
                         <th>类型</th>
                         <th>重试</th>
@@ -368,6 +369,7 @@
                         <td>${record.client_ip || '-'}</td>
                         <td><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${getKeyRemark(record.key_id)}</span></td>
                         <td>${record.provider || '-'}</td>
+                        <td>${record.user_model || '-'}</td>
                         <td>${record.model || '-'}</td>
                         <td><span class="badge ${record.path && record.path.includes('/v1/chat') ? 'badge-stream' : 'badge-non-stream'}">${record.path && record.path.includes('/v1/chat') ? 'OpenAI' : 'Anthropic'}</span></td>
                         <td>${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</td>
@@ -380,7 +382,7 @@
                     </tr>
                 `).join('');
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="13" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr><td colspan="14" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -438,6 +440,10 @@
                             <div class="detail-item">
                                 <div class="detail-label">供应商</div>
                                 <div class="detail-value">${record.provider || '-'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">用户模型</div>
+                                <div class="detail-value">${record.user_model || '-'}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">模型</div>
@@ -643,7 +649,7 @@
             if (data.recent_records && data.recent_records.length > 0) {
                 // Don't update table here, use loadHistory instead
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="13" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr><td colspan="14" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -725,6 +731,7 @@
                 <td>${record.client_ip || '-'}</td>
                 <td><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${getKeyRemark(record.key_id)}</span></td>
                 <td>${record.provider || '-'}</td>
+                <td>${record.user_model || '-'}</td>
                 <td>${record.model || '-'}</td>
                 <td><span class="badge ${record.path && record.path.includes('/v1/chat') ? 'badge-stream' : 'badge-non-stream'}">${record.path && record.path.includes('/v1/chat') ? 'OpenAI' : 'Anthropic'}</span></td>
                 <td>${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</td>

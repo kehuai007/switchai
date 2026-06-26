@@ -22,6 +22,7 @@ type UsageRecord struct {
 	ProviderID   string    `json:"provider_id"`
 	ProviderName string    `json:"provider_name"`
 	Model        string    `json:"model"`
+	UserModel    string    `json:"user_model"`
 	InputTokens  int       `json:"input_tokens"`
 	OutputTokens int       `json:"output_tokens"`
 	TotalTokens  int       `json:"total_tokens"`
@@ -114,7 +115,8 @@ func initDB() error {
 		group_name TEXT,
 		type_name TEXT,
 		key_id TEXT,
-		client_ip TEXT
+		client_ip TEXT,
+		user_model TEXT DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS provider_stats (
@@ -186,7 +188,7 @@ func (s *Stats) handleBroadcast() {
 		s.mu.RUnlock()
 
 		// 同时广播单条记录给 history WebSocket 客户端
-		history.BroadcastRecord(record.ProviderID, record.ProviderName, record.Model,
+		history.BroadcastRecord(record.ProviderID, record.ProviderName, record.Model, record.UserModel,
 			record.InputTokens, record.OutputTokens, record.Cost, record.Duration,
 			record.Timestamp, "", "")
 	}
@@ -215,7 +217,7 @@ func maskKeyID(keyID string) string {
 	return keyID[:8] + "..."
 }
 
-func RecordUsage(providerID, providerName, model, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64, keyID, clientIP string) {
+func RecordUsage(providerID, providerName, model, userModel, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64, keyID, clientIP string) {
 	if db == nil {
 		return
 	}
@@ -230,10 +232,10 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 	// Insert usage record
 	_, err = tx.Exec(`
 		INSERT INTO usage_records (provider_id, provider_name, model, input_tokens, output_tokens, total_tokens,
-			cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name, key_id, client_ip)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name, key_id, client_ip, user_model)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		providerID, providerName, model, inputTokens, outputTokens, inputTokens+outputTokens,
-		cost, duration, timeToFirst, time.Now().UnixNano(), group, reqType, keyID, clientIP)
+		cost, duration, timeToFirst, time.Now().UnixNano(), group, reqType, keyID, clientIP, userModel)
 	if err != nil {
 		logger.Error("Failed to insert usage record: %v", err)
 		return
@@ -342,6 +344,7 @@ func RecordUsage(providerID, providerName, model, group, reqType string, inputTo
 		ProviderID:   providerID,
 		ProviderName: providerName,
 		Model:        model,
+		UserModel:    userModel,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		TotalTokens:  inputTokens + outputTokens,

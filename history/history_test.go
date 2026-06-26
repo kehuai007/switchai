@@ -81,6 +81,67 @@ func TestRecordSummary_RetryCountJSONField(t *testing.T) {
 	}
 }
 
+// TestBuildBroadcastMessage_IncludesUserModel 守护：WebSocket 推送给客户端的 JSON 必须包含 user_model，
+// 前端 log.html 实时插入新记录（prependRecord）依赖这个字段渲染"用户模型"列。
+func TestBuildBroadcastMessage_IncludesUserModel(t *testing.T) {
+	r := RequestRecord{
+		ID:           "x1",
+		Model:        "claude-sonnet-4-5",
+		UserModel:    "my-alias",
+		InputTokens:  10,
+		OutputTokens: 20,
+	}
+	msg := buildBroadcastMessage(r)
+
+	got, ok := msg["user_model"]
+	if !ok {
+		t.Fatalf("broadcast message missing user_model field; msg = %v", msg)
+	}
+	if got != "my-alias" {
+		t.Errorf("user_model = %v, want %q", got, "my-alias")
+	}
+}
+
+// TestRequestRecord_UserModelJSONField 守护 /api/history 列表响应的 user_model 字段名。
+func TestRequestRecord_UserModelJSONField(t *testing.T) {
+	r := RequestRecord{UserModel: "my-alias"}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, ok := got["user_model"]
+	if !ok {
+		t.Fatalf("user_model field missing; json = %s", b)
+	}
+	if v.(string) != "my-alias" {
+		t.Errorf("user_model = %v, want my-alias", v)
+	}
+}
+
+// TestRecordSummary_UserModelJSONField 守护 /api/history 摘要的 user_model 字段名。
+func TestRecordSummary_UserModelJSONField(t *testing.T) {
+	s := RecordSummary{UserModel: "my-alias"}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, ok := got["user_model"]
+	if !ok {
+		t.Fatalf("user_model field missing; json = %s", b)
+	}
+	if v.(string) != "my-alias" {
+		t.Errorf("user_model = %v, want my-alias", v)
+	}
+}
+
 // TestAddRecord_PersistsRetryCount 端到端：写入 → 读出，retry_count 一致。
 func TestAddRecord_PersistsRetryCount(t *testing.T) {
 	resetForTest(t)

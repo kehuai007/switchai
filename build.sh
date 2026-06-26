@@ -10,7 +10,7 @@ echo "========================================"
 echo ""
 
 # Check if Go is installed
-if ! command -v go &> /dev/null; then
+if ! command -v go > /dev/null; then
     echo "ERROR: Go is not installed or not in PATH"
     exit 1
 fi

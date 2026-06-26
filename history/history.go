@@ -256,25 +256,7 @@ func RemoveClient(conn *websocket.Conn) {
 func (h *History) handleBroadcast() {
 	for record := range broadcast {
 		clientsMu.RLock()
-		total := len(clients)
-		msg := gin.H{
-			"id":           record.ID,
-			"total":        total,
-			"timestamp":    record.Timestamp,
-			"method":       record.Method,
-			"path":         record.Path,
-			"client_ip":    record.ClientIP,
-			"key_id":       record.KeyID,
-			"provider":     record.Provider,
-			"model":        record.Model,
-			"status_code":  record.StatusCode,
-			"duration_ms":  record.Duration,
-			"input_tokens": record.InputTokens,
-			"output_tokens": record.OutputTokens,
-			"total_tokens": record.TotalTokens,
-			"cost":         record.Cost,
-			"retry_count":  record.RetryCount,
-		}
+		msg := buildBroadcastMessage(record)
 		for client := range clients {
 			err := client.WriteJSON(msg)
 			if err != nil {
@@ -287,8 +269,31 @@ func (h *History) handleBroadcast() {
 	}
 }
 
+// buildBroadcastMessage 构造 WebSocket 推送给客户端的 JSON。
+// 提取出来便于单测：log.html 的 prependRecord 依赖这些字段名，回归时单测能直接守住。
+func buildBroadcastMessage(record RequestRecord) gin.H {
+	return gin.H{
+		"id":           record.ID,
+		"timestamp":    record.Timestamp,
+		"method":       record.Method,
+		"path":         record.Path,
+		"client_ip":    record.ClientIP,
+		"key_id":       record.KeyID,
+		"provider":     record.Provider,
+		"model":        record.Model,
+		"user_model":   record.UserModel,
+		"status_code":  record.StatusCode,
+		"duration_ms":  record.Duration,
+		"input_tokens": record.InputTokens,
+		"output_tokens": record.OutputTokens,
+		"total_tokens": record.TotalTokens,
+		"cost":         record.Cost,
+		"retry_count":  record.RetryCount,
+	}
+}
+
 // BroadcastRecord 从外部包广播记录到历史 WebSocket 客户端
-func BroadcastRecord(providerID, providerName, model string, inputTokens, outputTokens int, cost float64, duration int64, timestamp time.Time, keyID, clientIP string) {
+func BroadcastRecord(providerID, providerName, model, userModel string, inputTokens, outputTokens int, cost float64, duration int64, timestamp time.Time, keyID, clientIP string) {
 	record := RequestRecord{
 		ID:           "",
 		Timestamp:    timestamp,
@@ -298,6 +303,7 @@ func BroadcastRecord(providerID, providerName, model string, inputTokens, output
 		KeyID:        keyID,
 		Provider:     providerName,
 		Model:        model,
+		UserModel:    userModel,
 		StatusCode:   0,
 		Duration:     duration,
 		InputTokens:  inputTokens,

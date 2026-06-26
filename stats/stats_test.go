@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite"
 )
 
@@ -49,7 +50,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	group_name TEXT,
 	type_name TEXT,
 	key_id TEXT,
-	client_ip TEXT
+	client_ip TEXT,
+	user_model TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS provider_stats (
@@ -269,5 +271,32 @@ func TestGetDailyHistory_OneDayAbove1000(t *testing.T) {
 	}
 	if todayEntry.InputTokens != dayTotal*2 {
 		t.Fatalf("today InputTokens = %d, want %d", todayEntry.InputTokens, dayTotal*2)
+	}
+}
+
+// TestRecordUsage_PersistsUserModel 守护：RecordUsage 必须把用户原始模型名（userModel）落库，
+// stats→history 的二级广播链路会从这里取 user_model 字段推到 WebSocket 客户端。
+func TestRecordUsage_PersistsUserModel(t *testing.T) {
+	defer setupTestDB(t)()
+
+	// 其他测试只读 DB 不调 RecordUsage，包级 stats 变量在 Init() 之外默认是 nil；
+	// 这里临时初始化一个，让 RecordUsage 末尾的 stats.broadcast <- record 不 panic。
+	prevStats := stats
+	stats = &Stats{
+		clients:   make(map[*websocket.Conn]bool),
+		broadcast: make(chan UsageRecord, 100),
+	}
+	t.Cleanup(func() { stats = prevStats })
+
+	RecordUsage("prov-um", "ProviderUM", "actual-model", "my-alias", "g", "t",
+		1, 1, 0.001, 100, 50, "key-um", "127.0.0.1")
+
+	var got string
+	err := db.QueryRow(`SELECT user_model FROM usage_records WHERE provider_id = ?`, "prov-um").Scan(&got)
+	if err != nil {
+		t.Fatalf("query user_model: %v (schema must include user_model column)", err)
+	}
+	if got != "my-alias" {
+		t.Errorf("user_model = %q, want my-alias", got)
 	}
 }
