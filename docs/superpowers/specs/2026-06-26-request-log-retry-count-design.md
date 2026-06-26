@@ -55,26 +55,22 @@ INSERT（`history.go:307-347` `AddRecord`）和 `loadHomeCache` 的 SELECT（`hi
 func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *providers.Provider, maxRetries int) (*http.Response, int, error)
 ```
 
-返回值 `int` 为**最后一次执行的 attempt 值**（0 = 一次成功；N = 在第 N 次成功或最后一次失败时为 N，对应额外重试 N 次）。
-
 实现要点：
-- `attempt` 已经在 for 循环里被追踪（`proxy.go:109`）
-- 在 `break / return` 前把 `finalAttempt = attempt` 通过命名返回值带回
+- `attempt` 从 1 开始计数（`proxy.go:109` `for attempt := 1; attempt <= maxRetries; attempt++`）
+- 命名返回值 `finalAttempt int`，在所有 `return` 前赋值 `finalAttempt = attempt`
+- 调用方计算 `retries := finalAttempt - 1`（额外重试次数 = 总尝试次数 - 1）
 
-### 2.2 两处调用点接入（`proxy.go:623`、`proxy.go:752`）
+### 2.2 透传到两处 record 写入点（`proxy.go:623`、`proxy.go:752`）
 
-这两处构造 `RequestRecord{}` 并调用 `AddRecord` / 传给 WS broadcast。改：
+`doRequestWithRetry` 唯一调用点在 `proxy.go:362`（分发函数）。它拿到 `finalAttempt` 后需要透传到流式/非流式处理函数：
 
-```go
-resp, finalAttempt, err := doRequestWithRetry(req, bodyBytes, provider, 3)
-// ... 既有错误处理保持不变 ...
-record := RequestRecord{
-    // ... 既有字段 ...
-    RetryCount: finalAttempt,
-}
-```
+1. `proxy.go:362` 改为：`resp, finalAttempt, err := doRequestWithRetry(...)`
+2. `handleStreamResponse`（`proxy.go` 附近）签名加 `retryCount int` 参数
+3. `handleNonStreamResponse`（`proxy.go:678` 定义）签名加 `retryCount int` 参数
+4. `proxy.go:387`（stream 分支）把 `retryCount` 传进去
+5. `proxy.go:752`/`proxy.go:623` 的 `RequestRecord{}` 字面量加 `RetryCount: retryCount`
 
-注意 `maxRetries=3` 这个硬编码本次**不动**，避免顺手扩散变更面。单独的「让 `max_retries` 可配置」属于另一个独立话题。
+`retryCount` 在调用方计算：`retryCount := finalAttempt - 1`
 
 ---
 
@@ -121,6 +117,6 @@ record := RequestRecord{
 
 - **DB schema** 增量迁移，老数据 `retry_count=0`，无破坏
 - **API 响应** 增字段，老客户端忽略未知字段，无破坏
-- **`AddRecord`** 改动 INSERT 列数，必须同步改 SELECT（`loadHomeCache`）和详情接口查询
+- **`AddRecord`** 改动 INSERT 列数，必须同步改 SELECT（`loadHomeCache` 和 `GetRecords` / `GetRecord` / `GetRecordsSummary` 四处）
 - **前端** 列数从 12 → 13，三处同步（首页 / 列表 / 空状态 colspan）
-- **重试调用点** 两处都改；非流式 (`proxy.go:623`) 和流式 (`proxy.go:752`) 路径都要覆盖
+- **重试调用点** 透传链：分发函数 → handleStreamResponse / handleNonStreamResponse
