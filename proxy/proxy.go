@@ -361,13 +361,15 @@ func proxyHandler(c *gin.Context) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// 发送请求，带重试机制
-	resp, _, err := doRequestWithRetry(req, bodyBytes, provider, 3)
+	resp, finalAttempt, err := doRequestWithRetry(req, bodyBytes, provider, 3)
 	if err != nil {
 		logger.Error("❌ Proxy error after retries: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to proxy request after retries"})
 		return
 	}
 	defer resp.Body.Close()
+
+	retryCount := finalAttempt - 1
 
 	logger.Info("📥 收到目标服务器响应 - Status: %d, Content-Type: %s, Content-Encoding: %s",
 		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
@@ -386,16 +388,16 @@ func proxyHandler(c *gin.Context) {
 
 	// 处理流式响应
 	if isStream {
-		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
+		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat, retryCount)
 		return
 	}
 
 	// 处理非流式响应
-	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat)
+	handleNonStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat, retryCount)
 }
 
 // handleStreamResponse 处理流式响应（SSE）
-func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, actualModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
+func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, actualModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool, retryCount int) {
 	var firstTokenTime time.Time
 
 	c.Status(resp.StatusCode)
@@ -644,6 +646,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		OutputTokens:    outputTokens,
 		TotalTokens:     inputTokens + outputTokens,
 		Cost:            cost,
+		RetryCount:      retryCount,
 	})
 }
 
@@ -677,7 +680,7 @@ func decompressResponse(body io.Reader, contentEncoding string) ([]byte, error) 
 }
 
 // handleNonStreamResponse 处理非流式响应
-func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, actualModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool) {
+func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *config.Provider, requestID string, startTime time.Time, method, path, requestBody string, requestHeaders http.Header, requestedModel, actualModel, userModel string, keyID, clientIP string, isIncomingOpenAIFormat bool, retryCount int) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("❌ 读取响应体失败: %v", err)
@@ -773,6 +776,7 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 		OutputTokens:    outputTokens,
 		TotalTokens:     inputTokens + outputTokens,
 		Cost:            cost,
+		RetryCount:      retryCount,
 	})
 
 	// 如果请求格式与提供商格式不匹配，需要转换响应格式
