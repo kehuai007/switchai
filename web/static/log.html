@@ -38,6 +38,7 @@
         .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
         .badge-stream { background: #48bb78; color: white; }
         .badge-non-stream { background: #4299e1; color: white; }
+        .badge-retry { background: #ed8936; color: white; }
         .cost { color: #f56565; font-weight: 600; }
         .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
         .log-link { color: #667eea; cursor: pointer; text-decoration: underline; }
@@ -131,6 +132,7 @@
                         <th>供应商</th>
                         <th>模型</th>
                         <th>类型</th>
+                        <th>重试</th>
                         <th>输入Token</th>
                         <th>输出Token</th>
                         <th>总Token</th>
@@ -368,6 +370,7 @@
                         <td>${record.provider || '-'}</td>
                         <td>${record.model || '-'}</td>
                         <td><span class="badge ${record.path && record.path.includes('/v1/chat') ? 'badge-stream' : 'badge-non-stream'}">${record.path && record.path.includes('/v1/chat') ? 'OpenAI' : 'Anthropic'}</span></td>
+                        <td>${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</td>
                         <td>${formatToken(record.input_tokens || 0)}</td>
                         <td>${formatToken(record.output_tokens || 0)}</td>
                         <td>${formatToken(record.total_tokens || 0)}</td>
@@ -377,7 +380,7 @@
                     </tr>
                 `).join('');
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="12" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr><td colspan="13" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -636,7 +639,7 @@
             if (data.recent_records && data.recent_records.length > 0) {
                 // Don't update table here, use loadHistory instead
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="12" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr><td colspan="13" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -720,6 +723,7 @@
                 <td>${record.provider || '-'}</td>
                 <td>${record.model || '-'}</td>
                 <td><span class="badge ${record.path && record.path.includes('/v1/chat') ? 'badge-stream' : 'badge-non-stream'}">${record.path && record.path.includes('/v1/chat') ? 'OpenAI' : 'Anthropic'}</span></td>
+                <td>${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</td>
                 <td>${formatToken(record.input_tokens || 0)}</td>
                 <td>${formatToken(record.output_tokens || 0)}</td>
                 <td>${formatToken(record.total_tokens || 0)}</td>
