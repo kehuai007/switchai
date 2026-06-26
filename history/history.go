@@ -38,6 +38,7 @@ type RequestRecord struct {
 	OutputTokens    int         `json:"output_tokens"`
 	TotalTokens     int         `json:"total_tokens"`
 	Cost            float64     `json:"cost"`
+	RetryCount      int         `json:"retry_count"`
 }
 
 var (
@@ -59,6 +60,11 @@ type History struct {
 }
 
 func Init() error {
+	// Ensure appdata is initialized so GetConfigPath returns a valid directory.
+	if err := appdata.Init(); err != nil {
+		return err
+	}
+
 	// Ensure data directory exists
 	dataDir := appdata.GetConfigPath("")
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -101,7 +107,7 @@ func loadHomeCache() {
 	rows, err := db.Query(`
 		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
-			request_size, response_size, input_tokens, output_tokens, total_tokens, cost
+			request_size, response_size, input_tokens, output_tokens, total_tokens, cost, retry_count
 		FROM history ORDER BY timestamp DESC LIMIT ?`, homeCacheSize)
 	if err != nil {
 		logger.Error("Failed to load home cache: %v", err)
@@ -122,7 +128,7 @@ func loadHomeCache() {
 
 		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 			&statusCode, &durationMs, &requestBody, &responseBody, &reqHeaders, &respHeaders,
-			&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost)
+			&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost, &r.RetryCount)
 		if err != nil {
 			logger.Error("Failed to scan cache record: %v", err)
 			continue
@@ -185,7 +191,8 @@ func initDB() error {
 		input_tokens INTEGER,
 		output_tokens INTEGER,
 		total_tokens INTEGER,
-		cost REAL
+		cost REAL,
+		retry_count INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp DESC);
 	`
@@ -196,6 +203,7 @@ func initDB() error {
 
 	// Migration: add user_model column if it doesn't exist
 	db.Exec("ALTER TABLE history ADD COLUMN user_model TEXT DEFAULT ''")
+	db.Exec("ALTER TABLE history ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
 
 	return nil
 }
@@ -319,13 +327,13 @@ func AddRecord(record RequestRecord) {
 	_, err := db.Exec(`
 		INSERT INTO history (id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
-			request_size, response_size, input_tokens, output_tokens, total_tokens, cost)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			request_size, response_size, input_tokens, output_tokens, total_tokens, cost, retry_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.Timestamp.UnixNano(), record.Method, record.Path, record.ClientIP,
 		record.KeyID, record.Provider, record.Model, record.UserModel, record.StatusCode, record.Duration,
 		record.RequestBody, record.ResponseBody, reqHeaders, respHeaders,
 		record.RequestSize, record.ResponseSize, record.InputTokens, record.OutputTokens,
-		record.TotalTokens, record.Cost)
+		record.TotalTokens, record.Cost, record.RetryCount)
 	if err != nil {
 		logger.Error("Failed to insert history record: %v", err)
 	}
@@ -395,6 +403,7 @@ type RecordSummary struct {
 	OutputTokens int      `json:"output_tokens"`
 	TotalTokens int       `json:"total_tokens"`
 	Cost        float64   `json:"cost"`
+	RetryCount  int       `json:"retry_count"`
 }
 
 func GetRecords(page, pageSize int) ([]RequestRecord, int) {
@@ -417,7 +426,7 @@ func GetRecords(page, pageSize int) ([]RequestRecord, int) {
 	rows, err := db.Query(`
 		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
-			request_size, response_size, input_tokens, output_tokens, total_tokens, cost
+			request_size, response_size, input_tokens, output_tokens, total_tokens, cost, retry_count
 		FROM history ORDER BY timestamp DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
 		logger.Error("Failed to query records: %v", err)
@@ -438,7 +447,7 @@ func GetRecords(page, pageSize int) ([]RequestRecord, int) {
 
 		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 			&statusCode, &durationMs, &requestBody, &responseBody, &reqHeaders, &respHeaders,
-			&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost)
+			&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost, &r.RetryCount)
 		if err != nil {
 			logger.Error("Failed to scan record: %v", err)
 			continue
@@ -510,6 +519,7 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 				OutputTokens: r.OutputTokens,
 				TotalTokens:  r.TotalTokens,
 				Cost:         r.Cost,
+				RetryCount:   r.RetryCount,
 			})
 		}
 		return summaries, homeCacheTotal
@@ -527,7 +537,7 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 	rows, err := db.Query(`
 		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_size, response_size,
-			input_tokens, output_tokens, total_tokens, cost
+			input_tokens, output_tokens, total_tokens, cost, retry_count
 		FROM history ORDER BY timestamp DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
 		logger.Error("Failed to query records: %v", err)
@@ -540,13 +550,13 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 		var r RecordSummary
 		var timestamp int64
 		var method, path, clientIP, keyID, provider, model, userModel sql.NullString
-		var statusCode, durationMs, inputTokens, outputTokens, totalTokens sql.NullInt64
+		var statusCode, durationMs, inputTokens, outputTokens, totalTokens, retryCount sql.NullInt64
 		var requestSize, responseSize sql.NullInt64
 		var cost sql.NullFloat64
 
 		err := rows.Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 			&statusCode, &durationMs, &requestSize, &responseSize,
-			&inputTokens, &outputTokens, &totalTokens, &cost)
+			&inputTokens, &outputTokens, &totalTokens, &cost, &retryCount)
 		if err != nil {
 			logger.Error("Failed to scan record: %v", err)
 			continue
@@ -568,6 +578,7 @@ func GetRecordsSummary(page, pageSize int) ([]RecordSummary, int) {
 		r.OutputTokens = int(outputTokens.Int64)
 		r.TotalTokens = int(totalTokens.Int64)
 		r.Cost = cost.Float64
+		r.RetryCount = int(retryCount.Int64)
 
 		records = append(records, r)
 	}
@@ -588,10 +599,10 @@ func GetRecord(id string) *RequestRecord {
 	err := db.QueryRow(`
 		SELECT id, timestamp, method, path, client_ip, key_id, provider, model, user_model,
 			status_code, duration_ms, request_body, response_body, request_headers, response_headers,
-			request_size, response_size, input_tokens, output_tokens, total_tokens, cost
+			request_size, response_size, input_tokens, output_tokens, total_tokens, cost, retry_count
 		FROM history WHERE id = ?`, id).Scan(&r.ID, &timestamp, &method, &path, &clientIP, &keyID, &provider, &model, &userModel,
 		&statusCode, &durationMs, &requestBody, &responseBody, &reqHeaders, &respHeaders,
-		&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost)
+		&requestSize, &responseSize, &inputTokens, &outputTokens, &totalTokens, &cost, &r.RetryCount)
 	if err != nil {
 		return nil
 	}
