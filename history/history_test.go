@@ -1,7 +1,6 @@
 package history
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -62,8 +61,16 @@ func TestRecordSummary_RetryCountJSONField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !bytes.Contains(b, []byte(`"retry_count":3`)) {
-		t.Errorf("retry_count not in summary JSON: %s", b)
+	var got map[string]interface{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, ok := got["retry_count"]
+	if !ok {
+		t.Fatalf("retry_count field missing; json = %s", b)
+	}
+	if v.(float64) != 3 {
+		t.Errorf("retry_count = %v, want 3", v)
 	}
 }
 
@@ -86,8 +93,6 @@ func TestAddRecord_PersistsRetryCount(t *testing.T) {
 		RetryCount: 2,
 	}
 	AddRecord(r)
-	// Allow goroutine broadcast & home cache update
-	time.Sleep(50 * time.Millisecond)
 
 	got := GetRecord(id)
 	if got == nil {
