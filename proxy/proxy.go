@@ -102,11 +102,13 @@ func listModelsForKey(c *gin.Context) {
 }
 
 // doRequestWithRetry 执行请求并在遇到 "try again" 错误时自动重试
-func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Provider, maxRetries int) (*http.Response, error) {
+// finalAttempt 是最后一次执行的 attempt 编号（从 1 开始）。调用方用 finalAttempt-1 得到额外重试次数。
+func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Provider, maxRetries int) (resp *http.Response, finalAttempt int, err error) {
 	var lastResp *http.Response
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
+		finalAttempt = attempt
 		// 为每次重试创建新的请求体 reader
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
@@ -118,7 +120,7 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 				time.Sleep(time.Duration(attempt) * time.Second) // 递增延迟
 				continue
 			}
-			return nil, err
+			return nil, attempt, err
 		}
 
 		// 读取响应体以检查是否包含 "try again" 错误
@@ -131,7 +133,7 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 				time.Sleep(time.Duration(attempt) * time.Second)
 				continue
 			}
-			return nil, err
+			return nil, attempt, err
 		}
 
 		// 检查响应是否包含需要重试的错误
@@ -174,10 +176,10 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 		} else if attempt > 1 {
 			logger.Info("✅ 重试成功 (尝试 %d/%d)", attempt, maxRetries)
 		}
-		return resp, nil
+		return resp, attempt, nil
 	}
 
-	return lastResp, lastErr
+	return lastResp, maxRetries, lastErr
 }
 
 // resolveRouteTarget 根据 keyID + userModel 解析出真正的目标 provider 与其下模型名
@@ -359,7 +361,7 @@ func proxyHandler(c *gin.Context) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// 发送请求，带重试机制
-	resp, err := doRequestWithRetry(req, bodyBytes, provider, 3)
+	resp, _, err := doRequestWithRetry(req, bodyBytes, provider, 3)
 	if err != nil {
 		logger.Error("❌ Proxy error after retries: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to proxy request after retries"})
