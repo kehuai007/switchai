@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"switchai/appdata"
 )
 
 // resetForTest 把包级 db/broadcast/clients/homeCache 等状态重置，并在临时目录里重新初始化，
@@ -22,6 +24,11 @@ func resetForTest(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(origCwd) })
+
+	// appdata doesn't read env vars — use chdir + Init pattern (see proxy_test.go)
+	if err := appdata.Init(); err != nil {
+		t.Fatalf("appdata.Init: %v", err)
+	}
 
 	db = nil
 	if broadcast != nil {

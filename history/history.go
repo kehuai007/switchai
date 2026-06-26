@@ -60,11 +60,6 @@ type History struct {
 }
 
 func Init() error {
-	// Ensure appdata is initialized so GetConfigPath returns a valid directory.
-	if err := appdata.Init(); err != nil {
-		return err
-	}
-
 	// Ensure data directory exists
 	dataDir := appdata.GetConfigPath("")
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
