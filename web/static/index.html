@@ -1841,6 +1841,13 @@
         }
 
         async function loadKeyChart(keyId, bucket, state) {
+            // 5 分钟内同 bucket 复用缓存（缓存命中不增加 reqSeq）
+            const cached = keyStatsCache.get(keyId)?.get(bucket);
+            if (cached && Date.now() - cached.ts < 5 * 60 * 1000) {
+                state.chart.setOption(buildKeyChartOption(cached.data), true);
+                return;
+            }
+
             const mySeq = ++state.reqSeq;
             try {
                 const res = await fetch(`/api/server-keys/${keyId}/today-stats?bucket=${bucket}`);
