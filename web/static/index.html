@@ -1794,11 +1794,12 @@
 
         // Key 统计图表
         const keyCharts = new Map();
+        const keyStatsCache = new Map();
 
-        function toggleKeyChart(keyId, btn) {
+        async function toggleKeyChart(keyId, btn) {
             const existing = keyCharts.get(keyId);
             if (existing) {
-                if (existing.chart) existing.chart.dispose();
+                existing.chart.dispose();
                 keyCharts.delete(keyId);
                 existing.panel.remove();
                 btn.textContent = '今日统计';
@@ -1821,7 +1822,114 @@
             // 必须用 afterend 作为兄弟节点插入：.key-item 是 flex (flex-wrap:nowrap; overflow:hidden)，
             // appendChild 会让 280px 高的 panel 被裁剪。
             btn.closest('.key-item').insertAdjacentElement('afterend', panel);
-            keyCharts.set(keyId, { chart: null, panel, toggleBtn: btn });
+
+            const chartEl = panel.querySelector('.chart');
+            const chart = echarts.init(chartEl, null, { renderer: 'canvas' });
+            const state = { chart, panel, toggleBtn: btn, reqSeq: 0 };
+            keyCharts.set(keyId, state);
+            new ResizeObserver(() => chart.resize()).observe(chartEl);
+
+            await loadKeyChart(keyId, '5h', state);
+
+            panel.querySelectorAll('.bucket-toggle button').forEach(b => {
+                b.addEventListener('click', () => {
+                    panel.querySelectorAll('.bucket-toggle button').forEach(x => x.classList.remove('active'));
+                    b.classList.add('active');
+                    loadKeyChart(keyId, b.dataset.bucket, state);
+                });
+            });
+        }
+
+        async function loadKeyChart(keyId, bucket, state) {
+            const mySeq = ++state.reqSeq;
+            try {
+                const res = await fetch(`/api/server-keys/${keyId}/today-stats?bucket=${bucket}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                if (mySeq !== state.reqSeq) return;
+
+                if (!keyStatsCache.has(keyId)) keyStatsCache.set(keyId, new Map());
+                keyStatsCache.get(keyId).set(bucket, { data, ts: Date.now() });
+
+                state.chart.setOption(buildKeyChartOption(data), true);
+            } catch (err) {
+                if (mySeq !== state.reqSeq) return;
+                state.chart.setOption({
+                    title: { text: `加载失败: ${err.message}`, left: 'center', top: 'center',
+                             textStyle: { color: '#e53e3e', fontSize: 14 } }
+                });
+            }
+        }
+
+        function buildKeyChartOption(data) {
+            const labels = data.bucket === '5h'
+                ? ['00–05', '05–10', '10–15', '15–20', '20–24']
+                : Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+            const buckets = data.buckets;
+            const isHour = data.bucket === 'hour';
+
+            return {
+                animation: true,
+                animationDuration: 400,
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#ffffff',
+                    borderColor: '#cbd5e0',
+                    textStyle: { color: '#2d3748' },
+                    axisPointer: { type: 'cross', label: { backgroundColor: '#667eea' } },
+                    formatter: params => {
+                        const i = params[0].dataIndex;
+                        const b = buckets[i];
+                        const tStart = new Date(b.t);
+                        const tEnd = isHour
+                            ? new Date(tStart.getTime() + 3600 * 1000)
+                            : (i === buckets.length - 1 ? new Date() : new Date(tStart.getTime() + 18000 * 1000));
+                        return `<b>${tStart.toLocaleString()} - ${tEnd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</b><br/>
+                            输入 token: ${b.input_tokens.toLocaleString()}<br/>
+                            输出 token: ${b.output_tokens.toLocaleString()}<br/>
+                            请求数: ${b.request_count}<br/>
+                            花费: $${b.cost.toFixed(4)}`;
+                    }
+                },
+                legend: {
+                    data: ['输入 token', '输出 token', '请求数', '花费'],
+                    top: 0,
+                    textStyle: { color: '#4a5568', fontSize: 12 }
+                },
+                grid: { left: 60, right: 60, top: 40, bottom: 40 },
+                xAxis: {
+                    type: 'category',
+                    data: labels,
+                    axisLine: { lineStyle: { color: '#cbd5e0' } },
+                    axisLabel: { color: '#718096', fontSize: 11 },
+                    splitLine: { show: false }
+                },
+                yAxis: [
+                    { type: 'value', name: 'Tokens / 请求数', position: 'left',
+                      axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
+                      splitLine: { lineStyle: { color: '#edf2f7' } } },
+                    { type: 'value', name: '花费 ($)', position: 'right',
+                      axisLabel: { color: '#718096', formatter: '$${value}' },
+                      splitLine: { show: false } }
+                ],
+                series: [
+                    { name: '输入 token', type: 'line', smooth: true, symbol: 'none',
+                      itemStyle: { color: '#667eea' },
+                      areaStyle: { color: 'rgba(102,126,234,0.18)' },
+                      data: buckets.map(b => b.input_tokens) },
+                    { name: '输出 token', type: 'line', smooth: true, symbol: 'none',
+                      itemStyle: { color: '#764ba2' },
+                      data: buckets.map(b => b.output_tokens) },
+                    { name: '请求数', type: 'bar', yAxisIndex: 0,
+                      itemStyle: { color: 'rgba(237,137,54,0.4)' },
+                      barWidth: '40%',
+                      data: buckets.map(b => b.request_count) },
+                    { name: '花费', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
+                      itemStyle: { color: '#11998e' },
+                      lineStyle: { color: '#11998e', width: 1.5, type: 'dashed' },
+                      data: buckets.map(b => b.cost) }
+                ]
+            };
         }
     </script>
     <script src="static/vendor/echarts.min.js"></script>
