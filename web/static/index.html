@@ -1878,6 +1878,8 @@
             const cached = keyStatsCache.get(keyId)?.get(bucket);
             const todayKey = new Date().toISOString().slice(0, 10);
             if (cached && cached.day === todayKey && Date.now() - cached.ts < 5 * 60 * 1000) {
+                state.panel.querySelector('.chart-title').textContent =
+                    bucket === '7d' ? '近 7 日趋势' : '今日消耗趋势';
                 state.chart.setOption(buildKeyChartOption(cached.data), true);
                 return;
             }
@@ -1892,6 +1894,8 @@
                 if (!keyStatsCache.has(keyId)) keyStatsCache.set(keyId, new Map());
                 keyStatsCache.get(keyId).set(bucket, { day: todayKey, data, ts: Date.now() });
 
+                state.panel.querySelector('.chart-title').textContent =
+                    bucket === '7d' ? '近 7 日趋势' : '今日消耗趋势';
                 state.chart.setOption(buildKeyChartOption(data), true);
             } catch (err) {
                 if (mySeq !== state.reqSeq) return;
