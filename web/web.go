@@ -392,7 +392,8 @@ func getKeyTodayStats(c *gin.Context) {
 	bucket := c.DefaultQuery("bucket", "5h")
 	result, err := stats.GetKeyTodayBuckets(id, bucket)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("getKeyTodayStats failed for key %s bucket %s: %v", id, bucket, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 	c.JSON(http.StatusOK, result)

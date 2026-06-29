@@ -1867,9 +1867,11 @@
         }
 
         async function loadKeyChart(keyId, bucket, state) {
-            // 5 分钟内同 bucket 复用缓存（缓存命中不增加 reqSeq）
+            // 5 分钟内同 bucket 复用缓存；缓存必须与「今天」绑定，否则 23:58 缓存会被
+            // 00:03 复用，但 GetKeyTodayBuckets 只返回「今天」的数据（旧缓存变成昨天的）。
             const cached = keyStatsCache.get(keyId)?.get(bucket);
-            if (cached && Date.now() - cached.ts < 5 * 60 * 1000) {
+            const todayKey = new Date().toISOString().slice(0, 10);
+            if (cached && cached.day === todayKey && Date.now() - cached.ts < 5 * 60 * 1000) {
                 state.chart.setOption(buildKeyChartOption(cached.data), true);
                 return;
             }
@@ -1882,7 +1884,7 @@
                 if (mySeq !== state.reqSeq) return;
 
                 if (!keyStatsCache.has(keyId)) keyStatsCache.set(keyId, new Map());
-                keyStatsCache.get(keyId).set(bucket, { data, ts: Date.now() });
+                keyStatsCache.get(keyId).set(bucket, { day: todayKey, data, ts: Date.now() });
 
                 state.chart.setOption(buildKeyChartOption(data), true);
             } catch (err) {
@@ -1890,7 +1892,7 @@
                 state.chart.setOption({
                     title: { text: `加载失败: ${err.message}`, left: 'center', top: 'center',
                              textStyle: { color: '#e53e3e', fontSize: 14 } }
-                });
+                }, true);
             }
         }
 
