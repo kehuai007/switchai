@@ -270,6 +270,17 @@ switchai/
 - Token 统计数据仅保存在内存中，重启服务后会清空
 - 请求历史持久化到文件，重启后会自动加载
 
-## License
+## 九点九折开通MiniMax
+
+🚀 MiniMax Token Plan
+订阅一份套餐，解锁最新模型 —— 前沿 Coding 能力、1M 超长上下文、原生多模态，图文音视频共用套餐额度。
+🎁 邀友双赢福利
+好友订阅享 9折 + Builder 权益，邀请人得 10% 返利 + 社区特权！
+立即订阅：https://platform.minimaxi.com/subscribe/token-plan?code=nAAsoATPsf&source=link
+
+![alt text](pic/MiniMax_TokenPlan_UsageReport.png)
+
+## 请喝杯蜜雪冰城
+![alt text](pic/ScreenShot_2026-06-29_212413_090.png)
 
 MIT
