@@ -174,10 +174,11 @@ func initDB() error {
 	if err != nil {
 		return err
 	}
-	// 兼容老库：为已存在的 key_daily_stats 补充 tokens 列。
+	// 兼容老库：为已存在的表补充新增列（CREATE TABLE IF NOT EXISTS 不会迁移已有表）。
 	// ALTER ADD COLUMN 重复执行会报 "duplicate column"，故意忽略该错误。
 	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE usage_records ADD COLUMN user_model TEXT DEFAULT ''`)
 	return nil
 }
 
