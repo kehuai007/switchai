@@ -1909,9 +1909,17 @@
         function buildKeyChartOption(data) {
             const labels = data.bucket === '5h'
                 ? ['00–05', '05–10', '10–15', '15–20', '20–24']
-                : Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+                : data.bucket === '7d'
+                    ? data.buckets.map(b => {
+                        const t = new Date(b.t);
+                        const m = String(t.getMonth() + 1).padStart(2, '0');
+                        const d = String(t.getDate()).padStart(2, '0');
+                        return `${m}-${d}`;
+                    })
+                    : Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
             const buckets = data.buckets;
             const isHour = data.bucket === 'hour';
+            const is7d = data.bucket === '7d';
 
             return {
                 animation: true,
@@ -1928,8 +1936,17 @@
                         const tStart = new Date(b.t);
                         const tEnd = isHour
                             ? new Date(tStart.getTime() + 3600 * 1000)
-                            : (i === buckets.length - 1 ? new Date() : new Date(tStart.getTime() + 18000 * 1000));
-                        return `<b>${tStart.toLocaleString()} - ${tEnd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</b><br/>
+                            : is7d
+                                ? (i === buckets.length - 1
+                                    ? new Date()
+                                    : new Date(tStart.getTime() + 86400 * 1000))
+                                : (i === buckets.length - 1 ? new Date() : new Date(tStart.getTime() + 18000 * 1000));
+                        const tEndLabel = is7d
+                            ? (i === buckets.length - 1
+                                ? '当前'
+                                : tEnd.toLocaleDateString())
+                            : tEnd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+                        return `<b>${tStart.toLocaleString()} - ${tEndLabel}</b><br/>
                             输入 token: ${b.input_tokens.toLocaleString()}<br/>
                             输出 token: ${b.output_tokens.toLocaleString()}<br/>
                             请求数: ${b.request_count}<br/>
