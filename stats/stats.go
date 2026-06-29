@@ -191,7 +191,7 @@ func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 		return &TodayStats{KeyID: keyID, Bucket: bucket, Buckets: []TimeBucket{}}, nil
 	}
 
-	if bucket != "5h" && bucket != "hour" {
+	if bucket != "5h" && bucket != "hour" && bucket != "7d" {
 		bucket = "5h"
 	}
 
@@ -200,6 +200,32 @@ func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 	// usage_records.timestamp 是纳秒（见 RecordUsage 中 time.Now().UnixNano()），
 	// 所以桶大小和起点也必须用纳秒尺度，否则 round-down 会把记录归到错误的桶。
 	todayStartUnix := todayStart.UnixNano()
+
+	if bucket == "7d" {
+		buckets := make([]TimeBucket, 7)
+		for i := 0; i < 7; i++ {
+			d := todayStart.AddDate(0, 0, -(6 - i)) // i=0 → today-6, i=6 → today
+			var b TimeBucket
+			err := db.QueryRow(`
+				SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+				       COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0)
+				FROM key_daily_stats
+				WHERE date = ? AND key_id = ?`,
+				d.Format("2006-01-02"), keyID).
+				Scan(&b.InputTokens, &b.OutputTokens, &b.RequestCount, &b.Cost)
+			if err != nil {
+				return nil, err
+			}
+			b.T = d
+			buckets[i] = b
+		}
+		return &TodayStats{
+			KeyID:   keyID,
+			Date:    todayStart.Format("2006-01-02"),
+			Bucket:  "7d",
+			Buckets: buckets,
+		}, nil
+	}
 
 	div := int64(3600 * 1e9)
 	if bucket == "5h" {

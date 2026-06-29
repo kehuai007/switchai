@@ -639,3 +639,79 @@ func TestGetKeyTodayBuckets_LastBucket(t *testing.T) {
 		t.Errorf("末段 t = %v, want %v", got.Buckets[4].T, wantT)
 	}
 }
+
+// TestGetKeyTodayBuckets_7d 验证 7d 桶：返回 7 桶、含今天、按日期升序、缺失日期补 0。
+func TestGetKeyTodayBuckets_7d(t *testing.T) {
+	defer setupTestDB(t)()
+
+	keyID := "test-key-7d"
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	todayDate := todayStart.Format("2006-01-02")
+
+	// 写入 7 天数据，但缺失 today-3（验证缺失桶补 0）
+	rows := []struct {
+		date     string
+		input    int
+		output   int
+		requests int
+		cost     float64
+	}{
+		{todayStart.AddDate(0, 0, -6).Format("2006-01-02"), 100, 50, 1, 0.10},
+		{todayStart.AddDate(0, 0, -5).Format("2006-01-02"), 200, 80, 2, 0.20},
+		{todayStart.AddDate(0, 0, -4).Format("2006-01-02"), 300, 90, 3, 0.30},
+		// today-3 缺失
+		{todayStart.AddDate(0, 0, -2).Format("2006-01-02"), 400, 100, 4, 0.40},
+		{todayStart.AddDate(0, 0, -1).Format("2006-01-02"), 500, 110, 5, 0.50},
+		{todayDate, 600, 120, 6, 0.60},
+	}
+	for _, r := range rows {
+		_, err := db.Exec(`INSERT INTO key_daily_stats
+			(key_id, date, input_tokens, output_tokens, request_count, total_cost)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			keyID, r.date, r.input, r.output, r.requests, r.cost)
+		if err != nil {
+			t.Fatalf("insert failed for %s: %v", r.date, err)
+		}
+	}
+
+	stats, err := GetKeyTodayBuckets(keyID, "7d")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets(7d) returned error: %v", err)
+	}
+
+	if stats.Bucket != "7d" {
+		t.Fatalf("expected bucket=7d, got %q", stats.Bucket)
+	}
+	if len(stats.Buckets) != 7 {
+		t.Fatalf("expected 7 buckets, got %d", len(stats.Buckets))
+	}
+
+	// 验证升序：i=0 → today-6, i=6 → today
+	for i, b := range stats.Buckets {
+		expectedDate := todayStart.AddDate(0, 0, -(6 - i)).Format("2006-01-02")
+		if got := b.T.Format("2006-01-02"); got != expectedDate {
+			t.Errorf("bucket[%d].T = %s, want %s", i, got, expectedDate)
+		}
+	}
+
+	// today-3 缺失桶应为 0（i=3 → today-3）
+	missing := stats.Buckets[3]
+	if missing.InputTokens != 0 || missing.OutputTokens != 0 ||
+		missing.RequestCount != 0 || missing.Cost != 0 {
+		t.Errorf("expected zero bucket at i=3, got %+v", missing)
+	}
+
+	// 今天桶（i=6）应能正确读出累计数据
+	today := stats.Buckets[6]
+	if today.InputTokens != 600 || today.OutputTokens != 120 ||
+		today.RequestCount != 6 || today.Cost != 0.60 {
+		t.Errorf("today bucket mismatch: %+v", today)
+	}
+
+	// Date 字段应为今天
+	if stats.Date != todayDate {
+		t.Errorf("stats.Date = %s, want %s", stats.Date, todayDate)
+	}
+}
