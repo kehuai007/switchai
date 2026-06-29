@@ -79,6 +79,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.DELETE("/server-keys/:id", deleteServerKey)
 		api.POST("/server-keys/generate", generateServerKey)
 		api.GET("/server-keys/:id/stats", getServerKeyStats)
+		api.GET("/server-keys/:id/today-stats", getKeyTodayStats)
 		api.POST("/server-keys/:id/test", testServerKey)
 		api.GET("/server-keys/:id/mappings", getKeyMappings)
 		api.POST("/server-keys/:id/mappings", addKeyMapping)
@@ -382,6 +383,19 @@ func getServerKeyStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, keyStat)
+}
+
+// getKeyTodayStats 返回指定 key 今日按桶切分的时间序列。
+// Query: bucket=5h|hour（默认 5h）。
+func getKeyTodayStats(c *gin.Context) {
+	id := c.Param("id")
+	bucket := c.DefaultQuery("bucket", "5h")
+	result, err := stats.GetKeyTodayBuckets(id, bucket)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 var upgrader = websocket.Upgrader{
