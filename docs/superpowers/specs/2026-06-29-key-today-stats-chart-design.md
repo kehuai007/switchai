@@ -72,25 +72,24 @@ SwitchAI 网关的 admin dashboard（`web/static/index.html`）目前为每个 S
 
 ### 1.4 SQL
 
-按小时切桶的 SQL 模板：
+按桶大小（div）切桶：
 
 ```sql
-SELECT
-  CASE
-    WHEN ? = '5h' THEN (timestamp / 18000) * 18000
-    ELSE (timestamp / 3600) * 3600
-  END AS t,
-  COALESCE(SUM(input_tokens), 0),
-  COALESCE(SUM(output_tokens), 0),
-  COALESCE(SUM(cost), 0),
-  COUNT(*)
+SELECT (timestamp / ?) * ? AS t,
+       COALESCE(SUM(input_tokens), 0),
+       COALESCE(SUM(output_tokens), 0),
+       COALESCE(SUM(cost), 0),
+       COUNT(*)
 FROM usage_records
 WHERE key_id = ? AND timestamp >= ?
 GROUP BY t
 ORDER BY t
 ```
 
-参数顺序：`bucket`, `key_id`, `today_start_unix`。
+参数顺序：`div`, `div`, `key_id`, `today_start_unix`。
+
+- `bucket=5h` → `div = 18000`（18000 秒 = 5 小时）
+- `bucket=hour` → `div = 3600`
 
 **`today_start_unix` 取值**：本地时区今天 00:00 的 Unix 秒戳（与 `key_daily_stats.date` 字段 `today` 取值保持一致，见 `stats/stats.go:410`）。
 
@@ -263,7 +262,7 @@ CSS（沿用现有 `.btn-info` 蓝色；若没有则新增）：
 ### 3.3 展开/折叠 JS
 
 ```js
-const keyCharts = new Map();        // key_id -> { chart, panel, toggleBtn }
+const keyCharts = new Map();        // key_id -> { chart, panel, toggleBtn, reqSeq }
 const keyStatsCache = new Map();    // key_id -> Map<bucket, { data, ts }>
 
 async function toggleKeyChart(keyId, btn) {
@@ -295,39 +294,44 @@ async function toggleKeyChart(keyId, btn) {
 
     const chartEl = panel.querySelector('.chart');
     const chart = echarts.init(chartEl, null, { renderer: 'canvas' });
-    keyCharts.set(keyId, { chart, panel, toggleBtn: btn });
+    const state = { chart, panel, toggleBtn: btn, reqSeq: 0 };
+    keyCharts.set(keyId, state);
     new ResizeObserver(() => chart.resize()).observe(chartEl);
 
-    await loadKeyChart(keyId, '5h', chart);
+    await loadKeyChart(keyId, '5h', state);
 
     panel.querySelectorAll('.bucket-toggle button').forEach(b => {
         b.addEventListener('click', () => {
             panel.querySelectorAll('.bucket-toggle button').forEach(x => x.classList.remove('active'));
             b.classList.add('active');
-            loadKeyChart(keyId, b.dataset.bucket, chart);
+            loadKeyChart(keyId, b.dataset.bucket, state);
         });
     });
 }
 
-async function loadKeyChart(keyId, bucket, chart) {
+async function loadKeyChart(keyId, bucket, state) {
     // 5 分钟内同 bucket 复用缓存
     const cached = keyStatsCache.get(keyId)?.get(bucket);
     if (cached && Date.now() - cached.ts < 5 * 60 * 1000) {
-        chart.setOption(buildKeyChartOption(cached.data), true);
+        state.chart.setOption(buildKeyChartOption(cached.data), true);
         return;
     }
 
+    // 防止竞态：仅最新请求的结果会渲染到图表
+    const mySeq = ++state.reqSeq;
     try {
         const res = await fetch(`/api/server-keys/${keyId}/today-stats?bucket=${bucket}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        if (mySeq !== state.reqSeq) return;   // 用户已切换 bucket 或折叠
 
         if (!keyStatsCache.has(keyId)) keyStatsCache.set(keyId, new Map());
         keyStatsCache.get(keyId).set(bucket, { data, ts: Date.now() });
 
-        chart.setOption(buildKeyChartOption(data), true);
+        state.chart.setOption(buildKeyChartOption(data), true);
     } catch (err) {
-        chart.setOption({
+        if (mySeq !== state.reqSeq) return;
+        state.chart.setOption({
             title: { text: `加载失败: ${err.message}`, left: 'center', top: 'center',
                      textStyle: { color: '#e53e3e', fontSize: 14 } }
         });
@@ -345,7 +349,6 @@ function buildKeyChartOption(data) {
 
     const buckets = data.buckets;
     const isHour = data.bucket === 'hour';
-    const timeSuffix = isHour ? '时' : '段';
 
     return {
         animation: true,
