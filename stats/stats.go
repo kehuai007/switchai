@@ -56,6 +56,21 @@ type KeyStats struct {
 	TodayCost     float64  `json:"today_cost"`
 }
 
+type TimeBucket struct {
+	T            time.Time `json:"t"`
+	InputTokens  int       `json:"input_tokens"`
+	OutputTokens int       `json:"output_tokens"`
+	RequestCount int       `json:"request_count"`
+	Cost         float64   `json:"cost"`
+}
+
+type TodayStats struct {
+	KeyID   string       `json:"key_id"`
+	Date    string       `json:"date"`
+	Bucket  string       `json:"bucket"`
+	Buckets []TimeBucket `json:"buckets"`
+}
+
 var (
 	db    *sql.DB
 	stats *Stats
@@ -164,6 +179,86 @@ func initDB() error {
 	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`)
 	return nil
+}
+
+// GetKeyTodayBuckets 返回指定 key 今日按桶切分的时间序列。
+// bucket 接受 "5h"（默认，一天 5 段）或 "hour"（24 段）；其他值 fallback 到 "5h"。
+// 桶大小：5h=18000 秒，hour=3600 秒。
+// 返回的 buckets 数组已补齐所有空桶（即使该桶 0 请求）。
+func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
+	if db == nil {
+		return &TodayStats{KeyID: keyID, Bucket: bucket, Buckets: []TimeBucket{}}, nil
+	}
+
+	if bucket != "5h" && bucket != "hour" {
+		bucket = "5h"
+	}
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// usage_records.timestamp 是纳秒（见 RecordUsage 中 time.Now().UnixNano()），
+	// 所以桶大小和起点也必须用纳秒尺度，否则 round-down 会把记录归到错误的桶。
+	todayStartUnix := todayStart.UnixNano()
+
+	div := int64(3600 * 1e9)
+	if bucket == "5h" {
+		div = int64(18000 * 1e9)
+	}
+
+	query := `
+		SELECT ((timestamp - ?) / ?) * ? + ? AS t,
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(cost), 0),
+		       COUNT(*)
+		FROM usage_records
+		WHERE key_id = ? AND timestamp >= ?
+		GROUP BY t
+		ORDER BY t
+	`
+	// 把 todayStart 作为锚点再做桶取整，这样桶边界对齐到「今日 00:00」而不是 Unix 纪元，
+	// 否则 5h 桶会落到 1782000000000000000 这类与 todayStart 不一致的绝对时间上，
+	// 导致后续按 raw[todayStartUnix + i*div] 查表时全部 miss，bucket 全为 0。
+	rows, err := db.Query(query, todayStartUnix, div, div, todayStartUnix, keyID, todayStartUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	raw := map[int64]TimeBucket{}
+	for rows.Next() {
+		var t int64
+		var b TimeBucket
+		if err := rows.Scan(&t, &b.InputTokens, &b.OutputTokens, &b.Cost, &b.RequestCount); err != nil {
+			return nil, err
+		}
+		b.T = time.Unix(0, t).In(now.Location())
+		raw[t] = b
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	totalBuckets := 24
+	if bucket == "5h" {
+		totalBuckets = 5
+	}
+	buckets := make([]TimeBucket, totalBuckets)
+	for i := 0; i < totalBuckets; i++ {
+		t := todayStartUnix + int64(i)*div
+		if b, ok := raw[t]; ok {
+			buckets[i] = b
+		} else {
+			buckets[i] = TimeBucket{T: time.Unix(0, t).In(now.Location())}
+		}
+	}
+
+	return &TodayStats{
+		KeyID:   keyID,
+		Date:    todayStart.Format("2006-01-02"),
+		Bucket:  bucket,
+		Buckets: buckets,
+	}, nil
 }
 
 func Shutdown() {
