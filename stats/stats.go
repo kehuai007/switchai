@@ -182,9 +182,9 @@ func initDB() error {
 	return nil
 }
 
-// GetKeyTodayBuckets 返回指定 key 今日按桶切分的时间序列。
-// bucket 接受 "5h"（默认，一天 5 段）或 "hour"（24 段）；其他值 fallback 到 "5h"。
-// 桶大小：5h=18000 秒，hour=3600 秒。
+// GetKeyTodayBuckets 返回指定 key 按桶切分的时间序列。
+// bucket 接受 "5h"（默认，一天 5 段）、"hour"（24 段）或 "7d"（含今天在内的近 7 天，每日 1 桶）；其他值 fallback 到 "5h"。
+// 桶大小：5h=18000 秒，hour=3600 秒，7d=86400 秒。
 // 返回的 buckets 数组已补齐所有空桶（即使该桶 0 请求）。
 func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 	if db == nil {
@@ -213,7 +213,7 @@ func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 				WHERE date = ? AND key_id = ?`,
 				d.Format("2006-01-02"), keyID).
 				Scan(&b.InputTokens, &b.OutputTokens, &b.RequestCount, &b.Cost)
-			if err != nil {
+			if err != nil && err != sql.ErrNoRows {
 				return nil, err
 			}
 			b.T = d

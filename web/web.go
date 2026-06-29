@@ -386,7 +386,7 @@ func getServerKeyStats(c *gin.Context) {
 }
 
 // getKeyTodayStats 返回指定 key 今日按桶切分的时间序列。
-// Query: bucket=5h|hour（默认 5h）。
+// Query: bucket=5h|hour|7d（默认 5h；7d 含今天在内的近 7 天）。
 func getKeyTodayStats(c *gin.Context) {
 	id := c.Param("id")
 	bucket := c.DefaultQuery("bucket", "5h")
