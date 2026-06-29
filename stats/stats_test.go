@@ -400,3 +400,112 @@ func TestGetTodaySummary_PerKeyToday(t *testing.T) {
 		t.Errorf("GetTodaySummary TodayCost = %f, want ~0.1734", got.TodayCost)
 	}
 }
+
+// TestGetKeyTodayBuckets_5h 守护：bucket=5h 应把今日 00:00-04:59 归为桶 1，
+// 05:00-09:59 归为桶 2，依此类推。末段 20:00-23:59 是 4h。
+func TestGetKeyTodayBuckets_5h(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// 桶 1：01:00 → input=10, output=5, cost=0.10
+	// 桶 2：06:00 → input=20, output=8, cost=0.20
+	// 桶 3：12:00 → input=30, output=12, cost=0.30
+	// 桶 5：21:00 → input=40, output=15, cost=0.40（4h 段）
+	stamp := func(h, m int) int64 {
+		return todayStart.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute).UnixNano()
+	}
+	insertUsage := func(key string, ts int64, inTok, outTok int, cost float64) {
+		_, err := db.Exec(`INSERT INTO usage_records
+			(provider_id, model, input_tokens, output_tokens, total_tokens, cost, timestamp, key_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			"p", "m", inTok, outTok, inTok+outTok, cost, ts, key)
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	insertUsage("k1", stamp(1, 0), 10, 5, 0.10)
+	insertUsage("k1", stamp(6, 0), 20, 8, 0.20)
+	insertUsage("k1", stamp(12, 0), 30, 12, 0.30)
+	insertUsage("k1", stamp(21, 0), 40, 15, 0.40)
+
+	got, err := GetKeyTodayBuckets("k1", "5h")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets: %v", err)
+	}
+	if got.Bucket != "5h" {
+		t.Errorf("Bucket = %q, want 5h", got.Bucket)
+	}
+	if len(got.Buckets) != 5 {
+		t.Fatalf("Buckets length = %d, want 5", len(got.Buckets))
+	}
+	// 桶 1：01:00 落入 00:00 桶
+	if got.Buckets[0].InputTokens != 10 || got.Buckets[0].RequestCount != 1 {
+		t.Errorf("桶1 input/count = %d/%d, want 10/1", got.Buckets[0].InputTokens, got.Buckets[0].RequestCount)
+	}
+	// 桶 2：06:00 落入 05:00 桶
+	if got.Buckets[1].InputTokens != 20 {
+		t.Errorf("桶2 input = %d, want 20", got.Buckets[1].InputTokens)
+	}
+	// 桶 3：12:00 落入 10:00 桶
+	if got.Buckets[2].InputTokens != 30 {
+		t.Errorf("桶3 input = %d, want 30", got.Buckets[2].InputTokens)
+	}
+	// 桶 4：15:00-19:59 → 应为空
+	if got.Buckets[3].RequestCount != 0 {
+		t.Errorf("桶4 request_count = %d, want 0", got.Buckets[3].RequestCount)
+	}
+	// 桶 5：21:00 落入 20:00 桶
+	if got.Buckets[4].InputTokens != 40 {
+		t.Errorf("桶5 input = %d, want 40", got.Buckets[4].InputTokens)
+	}
+}
+
+// TestGetKeyTodayBuckets_Hour 守护：bucket=hour 应返回 24 个整点桶。
+func TestGetKeyTodayBuckets_Hour(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	stamp := func(h int) int64 {
+		return todayStart.Add(time.Duration(h) * time.Hour).Add(5 * time.Minute).UnixNano() // hh:05 落入 hh 桶
+	}
+	insertUsage := func(key string, ts int64, inTok int) {
+		_, err := db.Exec(`INSERT INTO usage_records
+			(provider_id, model, input_tokens, output_tokens, total_tokens, cost, timestamp, key_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			"p", "m", inTok, 0, inTok, 0.0, ts, key)
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	insertUsage("k1", stamp(3), 100)
+	insertUsage("k1", stamp(15), 200)
+	insertUsage("k1", stamp(23), 300)
+
+	got, err := GetKeyTodayBuckets("k1", "hour")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets: %v", err)
+	}
+	if got.Bucket != "hour" {
+		t.Errorf("Bucket = %q, want hour", got.Bucket)
+	}
+	if len(got.Buckets) != 24 {
+		t.Fatalf("Buckets length = %d, want 24", len(got.Buckets))
+	}
+	if got.Buckets[3].InputTokens != 100 {
+		t.Errorf("桶 03:00 input = %d, want 100", got.Buckets[3].InputTokens)
+	}
+	if got.Buckets[15].InputTokens != 200 {
+		t.Errorf("桶 15:00 input = %d, want 200", got.Buckets[15].InputTokens)
+	}
+	if got.Buckets[23].InputTokens != 300 {
+		t.Errorf("桶 23:00 input = %d, want 300", got.Buckets[23].InputTokens)
+	}
+	// 其他桶为空
+	if got.Buckets[0].RequestCount != 0 || got.Buckets[10].RequestCount != 0 {
+		t.Errorf("空桶不为 0: 桶0=%d, 桶10=%d", got.Buckets[0].RequestCount, got.Buckets[10].RequestCount)
+	}
+}
