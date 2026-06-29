@@ -787,6 +787,17 @@
                 return;
             }
 
+            // WebSocket 每次收到 key_stats 都会调用本函数重写 innerHTML；如果不保护，
+            // .key-chart-panel（toggleKeyChart 用 insertAdjacentElement('afterend', ...) 插入的兄弟节点）
+            // 会被一并销毁，导致已展开的统计图消失、按钮文字被重置、ECharts 实例在 keyCharts Map 中泄漏。
+            const preservedPanels = new Map();
+            for (const panel of list.querySelectorAll('.key-chart-panel')) {
+                const prev = panel.previousElementSibling;
+                if (prev && prev.classList.contains('key-item')) {
+                    preservedPanels.set(prev.dataset.keyId, panel);
+                }
+            }
+
             list.innerHTML = serverKeys.map((k, index) => {
                 const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost: 0, request_count: 0, today_req_count: 0, today_cost: 0, ip_addresses: [] };
                 const ips = stat.ip_addresses ? stat.ip_addresses.join(', ') : '无';
@@ -809,7 +820,7 @@
                 }
 
                 return `
-                    <div class="key-item ${k.is_enabled ? '' : 'disabled'}">
+                    <div class="key-item ${k.is_enabled ? '' : 'disabled'}" data-key-id="${k.id}">
                         <div class="key-item-header">
                             <div class="key-order">${index + 1}</div>
                             <div class="key-item-info">
@@ -848,6 +859,21 @@
                     </div>
                 `;
             }).join('');
+
+            // 重渲染后把已展开的 chart panel 重新挂回对应 key 的兄弟节点，并恢复按钮文字。
+            list.querySelectorAll('.key-item').forEach(item => {
+                const keyId = item.dataset.keyId;
+                const panel = preservedPanels.get(keyId);
+                if (!panel) return;
+                item.insertAdjacentElement('afterend', panel);
+                const state = keyCharts.get(keyId);
+                if (state && state.chart) state.chart.resize();
+                const newBtn = item.querySelector('.key-item-actions .btn-info');
+                if (newBtn) {
+                    newBtn.textContent = '收起统计';
+                    if (state) state.toggleBtn = newBtn;
+                }
+            });
         }
 
         function copyKey(key) {
