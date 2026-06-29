@@ -141,6 +141,34 @@
         .footer { text-align: center; padding: 20px; color: #999; font-size: 12px; }
         .footer a { color: #667eea; text-decoration: none; }
         .footer a:hover { text-decoration: underline; }
+
+        .btn-info {
+            background: #4299e1; color: #fff; border: none;
+            padding: 8px 16px; border-radius: 6px;
+            cursor: pointer; font-size: 13px; transition: background 200ms;
+        }
+        .btn-info:hover { background: #3182ce; }
+        .key-chart-panel {
+            margin-top: 12px; padding: 16px;
+            background: #ffffff; border: 1px solid #e2e8f0;
+            border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.04);
+        }
+        .chart-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 12px;
+        }
+        .chart-title { font-size: 14px; font-weight: 500; color: #2d3748; }
+        .bucket-toggle { display: inline-flex; gap: 4px; }
+        .bucket-toggle button {
+            background: #fff; color: #4a5568; border: 1px solid #cbd5e0;
+            padding: 4px 12px; border-radius: 6px;
+            cursor: pointer; font-size: 12px; transition: all 200ms;
+        }
+        .bucket-toggle button.active {
+            color: #667eea; border-color: #667eea; background: rgba(102,126,234,.08);
+        }
+        .bucket-toggle button:hover { background: #f7fafc; }
+        .chart-loading { text-align: center; padding: 40px; color: #999; }
     </style>
 </head>
 <body>
@@ -812,6 +840,7 @@
                             </div>
                         </div>
                         <div class="key-item-actions">
+                            <button class="btn-info" onclick="toggleKeyChart('${k.id}', this)">今日统计</button>
                             <button class="btn-primary" onclick="copyKey('${k.key}')">复制</button>
                             <button class="btn-warning" onclick="editKey('${k.id}')">编辑</button>
                             <button class="btn-danger" onclick="deleteKey('${k.id}')">删除</button>
@@ -1762,6 +1791,38 @@
 
         // 初始检查
         checkAuth();
+
+        // Key 统计图表
+        const keyCharts = new Map();
+
+        function toggleKeyChart(keyId, btn) {
+            const existing = keyCharts.get(keyId);
+            if (existing) {
+                if (existing.chart) existing.chart.dispose();
+                keyCharts.delete(keyId);
+                existing.panel.remove();
+                btn.textContent = '今日统计';
+                return;
+            }
+
+            btn.textContent = '收起统计';
+            const panel = document.createElement('div');
+            panel.className = 'key-chart-panel';
+            panel.innerHTML = `
+                <div class="chart-header">
+                    <span class="chart-title">今日消耗趋势</span>
+                    <div class="bucket-toggle">
+                        <button class="active" data-bucket="5h">5h</button>
+                        <button data-bucket="hour">1h</button>
+                    </div>
+                </div>
+                <div class="chart" style="height: 280px;"></div>
+            `;
+            // 必须用 afterend 作为兄弟节点插入：.key-item 是 flex (flex-wrap:nowrap; overflow:hidden)，
+            // appendChild 会让 280px 高的 panel 被裁剪。
+            btn.closest('.key-item').insertAdjacentElement('afterend', panel);
+            keyCharts.set(keyId, { chart: null, panel, toggleBtn: btn });
+        }
     </script>
     <script src="static/vendor/echarts.min.js"></script>
 </body>
