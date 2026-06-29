@@ -300,3 +300,103 @@ func TestRecordUsage_PersistsUserModel(t *testing.T) {
 		t.Errorf("user_model = %q, want my-alias", got)
 	}
 }
+
+// withTestStats 临时把包级 stats 替换为带 broadcast channel 的实例，
+// 让 RecordUsage 末尾的 stats.broadcast <- record 不 panic；返回清理函数。
+// 调用方需先 setupTestDB。
+func withTestStats(t *testing.T) func() {
+	t.Helper()
+	prevStats := stats
+	stats = &Stats{
+		clients:   make(map[*websocket.Conn]bool),
+		broadcast: make(chan UsageRecord, 100),
+	}
+	return func() { stats = prevStats }
+}
+
+// TestRecordUsage_PersistsKeyDailyTokens 守护：RecordUsage 必须把 input_tokens /
+// output_tokens 也累计到 key_daily_stats。GetTodaySummary 顶层今日 Token 计数依赖
+// 该列；不写则今日输入/输出 Token 永远 0。
+func TestRecordUsage_PersistsKeyDailyTokens(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	RecordUsage("prov-X", "ProviderX", "m", "alias", "g", "t",
+		10, 5, 0.1, 100, 50, "key-X", "127.0.0.1")
+	RecordUsage("prov-X", "ProviderX", "m", "alias", "g", "t",
+		30, 20, 0.2, 200, 80, "key-Y", "127.0.0.1")
+
+	summary := GetStats().GetTodaySummary()
+	if got := summary["total_input_tokens"]; got != 40 {
+		t.Errorf("total_input_tokens = %v, want 40", got)
+	}
+	if got := summary["total_output_tokens"]; got != 25 {
+		t.Errorf("total_output_tokens = %v, want 25", got)
+	}
+}
+
+// TestGetSummary_PerKeyTodayFromRecordUsage 守护：GetSummary 返回的 key_stats
+// 应当 LEFT JOIN key_daily_stats 取到 today_req_count / today_cost。
+func TestGetSummary_PerKeyTodayFromRecordUsage(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
+		10, 5, 0.1234, 100, 50, "key-A", "127.0.0.1")
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
+		20, 7, 0.05, 200, 80, "key-A", "127.0.0.1")
+
+	ksArr, ok := GetStats().GetSummary()["key_stats"].([]*KeyStats)
+	if !ok || len(ksArr) == 0 {
+		t.Fatalf("expected key_stats array, got %v", GetStats().GetSummary()["key_stats"])
+	}
+	var got *KeyStats
+	for _, k := range ksArr {
+		if k.KeyID == "key-A" {
+			got = k
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no entry for key-A in key_stats: %+v", ksArr)
+	}
+	if got.TodayReqCount != 2 {
+		t.Errorf("TodayReqCount = %d, want 2", got.TodayReqCount)
+	}
+	if got.TodayCost < 0.1733 || got.TodayCost > 0.1735 {
+		t.Errorf("TodayCost = %f, want ~0.1734", got.TodayCost)
+	}
+}
+
+// TestGetTodaySummary_PerKeyToday 守护：GetTodaySummary 的 key_stats 也应 LEFT
+// JOIN key_daily_stats 取到 today_req_count / today_cost（与 GetSummary 一致）。
+func TestGetTodaySummary_PerKeyToday(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
+		10, 5, 0.1234, 100, 50, "key-A", "127.0.0.1")
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
+		20, 7, 0.05, 200, 80, "key-A", "127.0.0.1")
+
+	ksArr, ok := GetStats().GetTodaySummary()["key_stats"].([]*KeyStats)
+	if !ok || len(ksArr) == 0 {
+		t.Fatalf("expected key_stats array, got %v", GetStats().GetTodaySummary()["key_stats"])
+	}
+	var got *KeyStats
+	for _, k := range ksArr {
+		if k.KeyID == "key-A" {
+			got = k
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no entry for key-A in key_stats: %+v", ksArr)
+	}
+	if got.TodayReqCount != 2 {
+		t.Errorf("GetTodaySummary TodayReqCount = %d, want 2", got.TodayReqCount)
+	}
+	if got.TodayCost < 0.1733 || got.TodayCost > 0.1735 {
+		t.Errorf("GetTodaySummary TodayCost = %f, want ~0.1734", got.TodayCost)
+	}
+}

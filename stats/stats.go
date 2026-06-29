@@ -322,12 +322,14 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 		// Upsert key_daily_stats
 		today := time.Now().Format("2006-01-02")
 		_, err = tx.Exec(`
-			INSERT INTO key_daily_stats (key_id, date, request_count, total_cost)
-			VALUES (?, ?, 1, ?)
+			INSERT INTO key_daily_stats (key_id, date, request_count, input_tokens, output_tokens, total_cost)
+			VALUES (?, ?, 1, ?, ?, ?)
 			ON CONFLICT(key_id, date) DO UPDATE SET
 				request_count = request_count + 1,
+				input_tokens = input_tokens + excluded.input_tokens,
+				output_tokens = output_tokens + excluded.output_tokens,
 				total_cost = total_cost + excluded.total_cost`,
-			keyID, today, cost)
+			keyID, today, inputTokens, outputTokens, cost)
 		if err != nil {
 			logger.Error("Failed to upsert key daily stats: %v", err)
 			return
@@ -498,7 +500,8 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	})
 
 	// Get key stats for today
-	keyRows, err := db.Query(`SELECT key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count FROM key_stats`)
+	today := time.Now().Format("2006-01-02")
+	keyRows, err := db.Query(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens, ks.total_tokens, ks.total_cost, ks.ip_addresses, ks.request_count, COALESCE(kds.request_count, 0) as today_req_count, COALESCE(kds.total_cost, 0.0) as today_cost FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?`, today)
 	if err != nil {
 		logger.Error("Failed to get key stats: %v", err)
 		return emptySummary()
@@ -509,7 +512,7 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	for keyRows.Next() {
 		var ks KeyStats
 		var ipsJSON string
-		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount); err != nil {
+		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount, &ks.TodayReqCount, &ks.TodayCost); err != nil {
 			continue
 		}
 		json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
