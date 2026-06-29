@@ -509,3 +509,133 @@ func TestGetKeyTodayBuckets_Hour(t *testing.T) {
 		t.Errorf("空桶不为 0: 桶0=%d, 桶10=%d", got.Buckets[0].RequestCount, got.Buckets[10].RequestCount)
 	}
 }
+
+// TestGetKeyTodayBuckets_Empty 守护：key 今日无请求时，buckets 数组仍按完整长度返回（全 0）。
+func TestGetKeyTodayBuckets_Empty(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	got, err := GetKeyTodayBuckets("nonexistent", "5h")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets: %v", err)
+	}
+	if len(got.Buckets) != 5 {
+		t.Fatalf("5h buckets length = %d, want 5", len(got.Buckets))
+	}
+	for i, b := range got.Buckets {
+		if b.RequestCount != 0 || b.InputTokens != 0 || b.OutputTokens != 0 || b.Cost != 0 {
+			t.Errorf("桶 %d 不为空: %+v", i, b)
+		}
+	}
+
+	gotHour, err := GetKeyTodayBuckets("nonexistent", "hour")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets hour: %v", err)
+	}
+	if len(gotHour.Buckets) != 24 {
+		t.Errorf("hour buckets length = %d, want 24", len(gotHour.Buckets))
+	}
+}
+
+// TestGetKeyTodayBuckets_InvalidBucket 守护：非法 bucket 值应 fallback 到 5h。
+func TestGetKeyTodayBuckets_InvalidBucket(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	got, err := GetKeyTodayBuckets("k1", "day")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets: %v", err)
+	}
+	if got.Bucket != "5h" {
+		t.Errorf("Bucket = %q, want 5h (fallback)", got.Bucket)
+	}
+	if len(got.Buckets) != 5 {
+		t.Errorf("Buckets length = %d, want 5", len(got.Buckets))
+	}
+}
+
+// TestGetKeyTodayBuckets_Boundary 守护：跨 5h/小时边界的请求必须落到正确桶。
+// 5h 边界：04:59:59 落入桶 1，05:00:00 落入桶 2。
+// 小时边界：00:59:59 落入桶 0，01:00:00 落入桶 1。
+func TestGetKeyTodayBuckets_Boundary(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	stamp := func(h, m, s int) int64 {
+		return todayStart.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second).UnixNano()
+	}
+	insertUsage := func(key string, ts int64, tag string) {
+		_, err := db.Exec(`INSERT INTO usage_records
+			(provider_id, model, input_tokens, output_tokens, total_tokens, cost, timestamp, key_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			"p", "m", 1, 0, 1, 0.0, ts, key)
+		if err != nil {
+			t.Fatalf("insert %s: %v", tag, err)
+		}
+	}
+	// 5h 边界用独立 key k5h，避免和 hour 边界记录混到同一 5h 桶
+	insertUsage("k5h", stamp(4, 59, 59), "4:59:59")  // 5h 桶 1 (00:00-04:59)
+	insertUsage("k5h", stamp(5, 0, 0), "5:00:00")    // 5h 桶 2 (05:00-09:59)
+	// hour 边界用独立 key kh
+	insertUsage("kh", stamp(0, 59, 59), "0:59:59")   // hour 桶 0 (00:00-00:59)
+	insertUsage("kh", stamp(1, 0, 0), "1:00:00")     // hour 桶 1 (01:00-01:59)
+
+	// 5h
+	got5h, _ := GetKeyTodayBuckets("k5h", "5h")
+	if got5h.Buckets[0].RequestCount != 1 {
+		t.Errorf("5h 桶 1 (04:59:59) request_count = %d, want 1", got5h.Buckets[0].RequestCount)
+	}
+	if got5h.Buckets[1].RequestCount != 1 {
+		t.Errorf("5h 桶 2 (05:00:00) request_count = %d, want 1", got5h.Buckets[1].RequestCount)
+	}
+
+	// hour
+	gotHour, _ := GetKeyTodayBuckets("kh", "hour")
+	if gotHour.Buckets[0].RequestCount != 1 {
+		t.Errorf("hour 桶 0 (00:59:59) request_count = %d, want 1", gotHour.Buckets[0].RequestCount)
+	}
+	if gotHour.Buckets[1].RequestCount != 1 {
+		t.Errorf("hour 桶 1 (01:00:00) request_count = %d, want 1", gotHour.Buckets[1].RequestCount)
+	}
+}
+
+// TestGetKeyTodayBuckets_LastBucket 守护：末段 20:00-23:59 是 4h（不补齐为 5h）。
+// t 字段是 20:00:00，RequestCount 等数据按实际落入。
+func TestGetKeyTodayBuckets_LastBucket(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	stamp := func(h int) int64 {
+		return todayStart.Add(time.Duration(h) * time.Hour).UnixNano()
+	}
+	insertUsage := func(key string, ts int64, inTok int) {
+		_, err := db.Exec(`INSERT INTO usage_records
+			(provider_id, model, input_tokens, output_tokens, total_tokens, cost, timestamp, key_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			"p", "m", inTok, 0, inTok, 0.0, ts, key)
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	insertUsage("k1", stamp(22), 50) // 末段
+
+	got, err := GetKeyTodayBuckets("k1", "5h")
+	if err != nil {
+		t.Fatalf("GetKeyTodayBuckets: %v", err)
+	}
+	if len(got.Buckets) != 5 {
+		t.Fatalf("Buckets length = %d, want 5 (不补齐末段)", len(got.Buckets))
+	}
+	if got.Buckets[4].InputTokens != 50 {
+		t.Errorf("末段 input = %d, want 50", got.Buckets[4].InputTokens)
+	}
+	// 末段 t 字段应为 20:00:00
+	wantT := todayStart.Add(20 * time.Hour)
+	if !got.Buckets[4].T.Equal(wantT) {
+		t.Errorf("末段 t = %v, want %v", got.Buckets[4].T, wantT)
+	}
+}
