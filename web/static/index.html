@@ -1211,6 +1211,8 @@
                 console.log('WebSocket message received:', data);
                 if (data.total_input_tokens !== undefined) {
                     updateStats(data);
+                    // 今日统计也来自同一份 summary（total_* 字段），独立 GET /api/stats/daily 太慢
+                    updateTodayStats(data);
                     // 更新密钥统计
                     if (data.key_stats) {
                         keyStats = {};
@@ -1222,6 +1224,7 @@
                 } else if (data.input_tokens !== undefined) {
                     console.log('New token usage received, refreshing stats...');
                     loadStats();
+                    loadDailyStats();
                 }
             };
 
@@ -1317,6 +1320,8 @@
                 console.log('WebSocket message received:', data);
                 if (data.total_input_tokens !== undefined) {
                     updateStats(data);
+                    // 今日统计也来自同一份 summary（total_* 字段），独立 GET /api/stats/daily 太慢
+                    updateTodayStats(data);
                     // 更新密钥统计
                     if (data.key_stats) {
                         keyStats = {};
