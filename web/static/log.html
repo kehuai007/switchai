@@ -35,6 +35,8 @@
         .records-table th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #e0e0e0; }
         .records-table td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
         .records-table tr:hover { background: #f8f9fa; }
+        .records-table td:first-child .time-date { display: block; font-size: 11px; color: #999; line-height: 1.3; white-space: nowrap; }
+        .records-table td:first-child .time-time { display: block; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; color: #333; line-height: 1.3; white-space: nowrap; }
         .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
         .badge-stream { background: #48bb78; color: white; }
         .badge-non-stream { background: #4299e1; color: white; }
@@ -49,6 +51,9 @@
         .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
         .close { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
         .close:hover { color: #000; }
+        .modal-header-actions { display: flex; align-items: center; gap: 12px; }
+        .modal-header-actions button { padding: 6px 14px; font-size: 13px; }
+        .hidden { display: none !important; }
         .detail-section { margin-bottom: 20px; }
         .detail-section h3 { color: #333; margin-bottom: 10px; font-size: 16px; }
         .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
@@ -153,7 +158,10 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="modalTitle">请求详情</h2>
-                <span class="close" onclick="closeModal()">&times;</span>
+                <div class="modal-header-actions">
+                    <button class="btn-primary hidden" id="detailDownloadBtn" onclick="downloadDetail()">下载</button>
+                    <span class="close" onclick="closeModal()">&times;</span>
+                </div>
             </div>
             <div class="modal-body" id="modalBody"></div>
         </div>
@@ -166,6 +174,7 @@
         let pageSize = 20;
         let totalRecords = 0;
         let serverKeys = {}; // key_id -> key info
+        let currentDetailRecord = null; // 当前详情弹窗里的 record，供下载按钮使用
 
         async function loadServerKeys() {
             try {
@@ -304,6 +313,8 @@
                     `;
                         });
                 });
+            // Key 详情不提供下载（数据维度不同）
+            document.getElementById('detailDownloadBtn').classList.add('hidden');
             document.getElementById('detailModal').style.display = 'flex';
         }
 
@@ -316,7 +327,7 @@
             const minutes = String(date.getMinutes()).padStart(2, '0');
             const seconds = String(date.getSeconds()).padStart(2, '0');
             const ms = String(date.getMilliseconds()).padStart(3, '0');
-            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+            return `<span class="time-date">${year}-${month}-${day}</span> <span class="time-time">${hours}:${minutes}:${seconds}.${ms}</span>`;
         }
 
         function formatBytes(bytes) {
@@ -409,6 +420,8 @@
             try {
                 const res = await fetch(`/api/history/${id}`);
                 const record = await res.json();
+                currentDetailRecord = record;
+                document.getElementById('detailDownloadBtn').classList.remove('hidden');
 
                 document.getElementById('modalTitle').textContent = '请求详情';
                 const keyRemark = getKeyRemark(record.key_id);
@@ -517,6 +530,90 @@
                 document.getElementById('detailModal').style.display = 'flex';
             } catch (err) {
                 alert('加载详情失败: ' + err.message);
+            }
+        }
+
+        // 下载当前详情弹窗里的 request 为 txt —— 用于事后分析
+        function downloadDetail() {
+            if (!currentDetailRecord) return;
+            const r = currentDetailRecord;
+            const ts = new Date(r.timestamp);
+            const pad2 = n => String(n).padStart(2, '0');
+            const pad3 = n => String(n).padStart(3, '0');
+            const tsStr = `${ts.getFullYear()}-${pad2(ts.getMonth() + 1)}-${pad2(ts.getDate())}_${pad2(ts.getHours())}-${pad2(ts.getMinutes())}-${pad2(ts.getSeconds())}`;
+            const shortId = r.id ? r.id.replace(/-/g, '').substring(0, 8) : 'unknown';
+            const filename = `switchai-request_${tsStr}_${shortId}.txt`;
+
+            const content = buildDetailTxt(r);
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // 把 record 序列化成纯文本：基本信息 + Token + 请求体 + 响应体
+        function buildDetailTxt(r) {
+            const sep = '='.repeat(60);
+            const sub = '-'.repeat(60);
+            const lines = [];
+            lines.push('SwitchAI 请求详情');
+            lines.push(sep);
+            lines.push('');
+            lines.push('[基本信息]');
+            lines.push(sub);
+            lines.push(`请求时间:  ${formatTimeText(r.timestamp)}`);
+            lines.push(`记录ID:    ${r.id || '-'}`);
+            lines.push(`Key:       ${getKeyRemark(r.key_id)} (id=${r.key_id || '-'})`);
+            lines.push(`客户端IP:  ${r.client_ip || '-'}`);
+            lines.push(`请求方法:  ${r.method || '-'}`);
+            lines.push(`请求路径:  ${r.path || '-'}`);
+            lines.push(`供应商:    ${r.provider || '-'}`);
+            lines.push(`用户模型:  ${r.user_model || '-'}`);
+            lines.push(`模型:      ${r.model || '-'}`);
+            lines.push(`状态码:    ${r.status_code}`);
+            lines.push(`耗时:      ${formatDuration(r.duration_ms)}`);
+            lines.push(`重试次数:  ${r.retry_count || 0}`);
+            lines.push(`请求大小:  ${formatBytes(r.request_size || 0)}`);
+            lines.push(`响应大小:  ${formatBytes(r.response_size || 0)}`);
+            lines.push('');
+            lines.push('[Token 使用]');
+            lines.push(sub);
+            lines.push(`输入 Token:  ${r.input_tokens || 0}`);
+            lines.push(`输出 Token:  ${r.output_tokens || 0}`);
+            lines.push(`总 Token:    ${r.total_tokens || 0}`);
+            lines.push(`花费:        ${r.cost ? formatCost(r.cost) : '-'}`);
+            lines.push('');
+            lines.push('[请求体]');
+            lines.push(sub);
+            lines.push(formatJsonForTxt(r.request_body));
+            lines.push('');
+            lines.push('[响应体]');
+            lines.push(sub);
+            lines.push(formatJsonForTxt(r.response_body));
+            return lines.join('\n');
+        }
+
+        // 纯文本版时间格式化（页面上的 formatTime 返回 HTML，不能直接塞 txt）
+        function formatTimeText(timestamp) {
+            const d = new Date(timestamp);
+            if (isNaN(d.getTime())) return String(timestamp || '-');
+            const p2 = n => String(n).padStart(2, '0');
+            const p3 = n => String(n).padStart(3, '0');
+            return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}.${p3(d.getMilliseconds())}`;
+        }
+
+        // 尝试把 JSON 字符串 pretty-print；不是合法 JSON 就原样输出
+        function formatJsonForTxt(text) {
+            if (!text || text === '无') return '无';
+            try {
+                return JSON.stringify(JSON.parse(text), null, 2);
+            } catch {
+                return text;
             }
         }
 
