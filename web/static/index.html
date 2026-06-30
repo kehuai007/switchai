@@ -246,6 +246,14 @@
         .quota-bar-right .pct.quota-orange    { color: #e67e22; }
         .quota-bar-right .pct.quota-redOrange { color: #e67e22; }
         .quota-bar-right .pct.quota-red       { color: #c0392b; }
+        .quota-bar-row[data-pid] { cursor: pointer; transition: background 150ms; padding: 2px 4px; border-radius: 4px; }
+        .quota-bar-row[data-pid]:hover { background: #f7fafc; }
+
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+        .modal-header h3 { margin: 0; font-size: 16px; color: #2d3748; }
+        .modal-close { background: none; border: none; font-size: 24px; line-height: 1; cursor: pointer; color: #999; padding: 0 4px; }
+        .modal-close:hover { color: #333; }
+        .modal-footer { display: flex; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 13px; color: #4a5568; }
         .quota-block-toggle { display: block; font-size: 11px; margin-top: 6px; cursor: pointer; }
         .quota-block-toggle input { margin-right: 3px; vertical-align: middle; }
     </style>
@@ -576,6 +584,26 @@
                     <button type="submit" class="btn-success">保存</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Quota Chart Modal -->
+    <div class="modal" id="quotaChartModal">
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h3 id="quotaChartTitle">限额趋势</h3>
+                <button class="modal-close" onclick="hideQuotaChartModal()">×</button>
+            </div>
+            <div class="bucket-toggle" id="quotaRangeToggle">
+                <button data-range="5h" class="active">5h</button>
+                <button data-range="1h">1h</button>
+                <button data-range="7d">7d</button>
+            </div>
+            <div id="quotaChart" style="height: 360px; margin-top: 12px;"></div>
+            <div class="modal-footer">
+                <span id="quotaChartCurrent"></span>
+                <span id="quotaChartReset"></span>
+            </div>
         </div>
     </div>
 
