@@ -2275,13 +2275,20 @@
             }
             if (quotaChartState) {
                 quotaChartState.chart.dispose();
+                if (quotaChartState.resizeObserver) quotaChartState.resizeObserver.disconnect();
             }
 
             const chartEl = document.getElementById('quotaChart');
             chartEl.innerHTML = '';
             const chart = echarts.init(chartEl, null, { renderer: 'canvas' });
-            quotaChartState = { chart, pid, window, range: '5h', reqSeq: 0 };
-            new ResizeObserver(() => chart.resize()).observe(chartEl);
+            // 把 observer 存到 state，hide 时 disconnect（避免对已 dispose 的 chart 调用 resize 抛错）
+            const resizeObserver = new ResizeObserver(() => {
+                if (quotaChartState && quotaChartState.chart === chart && !chart.isDisposed()) {
+                    chart.resize();
+                }
+            });
+            resizeObserver.observe(chartEl);
+            quotaChartState = { chart, pid, window, range: '5h', reqSeq: 0, resizeObserver };
 
             // range toggle
             const toggle = document.getElementById('quotaRangeToggle');
@@ -2300,6 +2307,7 @@
         function hideQuotaChartModal() {
             document.getElementById('quotaChartModal').classList.remove('show');
             if (quotaChartState) {
+                if (quotaChartState.resizeObserver) quotaChartState.resizeObserver.disconnect();
                 quotaChartState.chart.dispose();
                 quotaChartState = null;
             }
