@@ -32,6 +32,28 @@ type Provider struct {
 	CreatedAt      string `json:"created_at"`
 	Order          int    `json:"order"`
 	IsOpenAIFormat bool   `json:"is_openai_format"` // 标识是否为 OpenAI 格式的 API
+
+	// Quota — 由 quota 包在请求时填充，不持久化（QuotaBlockEnabled 除外，由 Config.QuotaBlockEnabled 单独持久化）。
+	QuotaEnabled      bool            `json:"quota_enabled,omitempty"`
+	QuotaError        string          `json:"quota_error,omitempty"`
+	QuotaInterval     QuotaWindowJSON `json:"quota_interval,omitempty"`
+	QuotaWeekly       QuotaWindowJSON `json:"quota_weekly,omitempty"`
+	QuotaBlockEnabled bool            `json:"quota_block_enabled"`
+}
+
+// QuotaWindowJSON 描述某一条额度窗口（5h 区间或 7d 本周）的展示字段。
+// 由 web 层从 quota.Snapshot 转 json 后挂在 Provider 上返回给前端。
+type QuotaWindowJSON struct {
+	Enabled          bool    `json:"enabled"`
+	RemainingPercent float64 `json:"remaining_percent,omitempty"`
+	UsedPercent      float64 `json:"used_percent"`
+	StartTime        int64   `json:"start_time,omitempty"` // unix ms
+	EndTime          int64   `json:"end_time,omitempty"`   // unix ms
+	ResetInSec       int     `json:"reset_in_sec,omitempty"`
+	ResetInHuman     string  `json:"reset_in_human,omitempty"`
+	TotalCount       int64   `json:"total_count,omitempty"`
+	UsageCount       int64   `json:"usage_count,omitempty"`
+	Status           int     `json:"status,omitempty"`
 }
 
 // BuildProviderURL 拼接 BaseURL 和 endpoint，避免出现 /v1/v1 或 // 这类非法 URL。
@@ -105,13 +127,14 @@ type ServerKey struct {
 }
 
 type Config struct {
-	Providers     []Provider            `json:"providers"`
-	ServerKeys    []ServerKey           `json:"server_keys"` // 服务器密钥列表
-	TOTPSecret    string                `json:"totp_secret"`  // TOTP 2FA 密钥
-	TOTPEnabled   bool                  `json:"totp_enabled"` // 是否已启用 2FA
-	SessionTokens []SessionTokenEntry   `json:"session_tokens"` // 多端登录的会话 token 列表
-	SkipAuth      bool                  `json:"skip_auth"`      // 跳过认证（内网部署）
-	mu            sync.RWMutex
+	Providers         []Provider          `json:"providers"`
+	ServerKeys        []ServerKey         `json:"server_keys"` // 服务器密钥列表
+	TOTPSecret        string              `json:"totp_secret"`  // TOTP 2FA 密钥
+	TOTPEnabled       bool                `json:"totp_enabled"` // 是否已启用 2FA
+	SessionTokens     []SessionTokenEntry `json:"session_tokens"` // 多端登录的会话 token 列表
+	SkipAuth          bool                `json:"skip_auth"`      // 跳过认证（内网部署）
+	QuotaBlockEnabled map[string]bool     `json:"-"`              // provider_id -> 是否启用额度拦截；启动时从 DB 重建，O(1) 查询
+	mu                sync.RWMutex
 }
 
 var skipAuthMode bool
@@ -202,7 +225,8 @@ func initDB() error {
 		is_active INTEGER,
 		created_at TEXT,
 		order_num INTEGER,
-		is_openai_format INTEGER DEFAULT 0
+		is_openai_format INTEGER DEFAULT 0,
+		quota_block_enabled INTEGER DEFAULT 0
 	);
 	CREATE TABLE IF NOT EXISTS server_keys (
 		id TEXT PRIMARY KEY,
@@ -236,6 +260,8 @@ func initDB() error {
 
 	// 迁移：添加 is_openai_format 列（如果不存在）
 	db.Exec("ALTER TABLE providers ADD COLUMN is_openai_format INTEGER DEFAULT 0")
+	// 迁移：添加 quota_block_enabled 列（如果不存在）
+	db.Exec("ALTER TABLE providers ADD COLUMN quota_block_enabled INTEGER DEFAULT 0")
 
 	return nil
 }
@@ -278,22 +304,25 @@ func (c *Config) Load() error {
 	}
 
 	// 加载 providers
-	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num, COALESCE(is_openai_format, 0) FROM providers ORDER BY order_num")
+	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num, COALESCE(is_openai_format, 0), COALESCE(quota_block_enabled, 0) FROM providers ORDER BY order_num")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	c.Providers = nil
+	c.QuotaBlockEnabled = map[string]bool{}
 	for rows.Next() {
 		var p Provider
 		var isActive int
 		var isOpenAIFormat int
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order, &isOpenAIFormat); err != nil {
+		var quotaBlock int
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order, &isOpenAIFormat, &quotaBlock); err != nil {
 			return err
 		}
 		p.IsActive = isActive == 1
 		p.IsOpenAIFormat = isOpenAIFormat == 1
+		c.QuotaBlockEnabled[p.ID] = quotaBlock == 1
 		c.Providers = append(c.Providers, p)
 	}
 
@@ -371,8 +400,12 @@ func (c *Config) save() error {
 		if p.IsOpenAIFormat {
 			isOpenAIFormat = 1
 		}
-		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat)
+		quotaBlock := 0
+		if c.QuotaBlockEnabled[p.ID] {
+			quotaBlock = 1
+		}
+		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format, quota_block_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat, quotaBlock)
 		if err != nil {
 			return err
 		}
@@ -501,6 +534,27 @@ func (c *Config) sortProviders() {
 	sort.Slice(c.Providers, func(i, j int) bool {
 		return c.Providers[i].Order < c.Providers[j].Order
 	})
+}
+
+// SetProviderQuotaBlockEnabled 更新某个 provider 的额度拦截开关：
+//   - 同步更新内存中的 c.QuotaBlockEnabled[id]，供 quota.IsBlocked() O(1) 查询；
+//   - 同步写入 DB 的 quota_block_enabled 列，重启后由 Load() 重建。
+func (c *Config) SetProviderQuotaBlockEnabled(id string, enabled bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.QuotaBlockEnabled == nil {
+		c.QuotaBlockEnabled = map[string]bool{}
+	}
+	c.QuotaBlockEnabled[id] = enabled
+	_, err := db.Exec("UPDATE providers SET quota_block_enabled = ? WHERE id = ?", boolToInt(enabled), id)
+	return err
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // generateServerKeyBody returns a fresh sk- + 16 chars [a-zA-Z0-9] string.

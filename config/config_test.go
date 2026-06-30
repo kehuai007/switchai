@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS providers (
 	is_active INTEGER,
 	created_at TEXT,
 	order_num INTEGER,
-	is_openai_format INTEGER DEFAULT 0
+	is_openai_format INTEGER DEFAULT 0,
+	quota_block_enabled INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS server_keys (
 	id TEXT PRIMARY KEY,
@@ -692,6 +693,86 @@ func TestGenerateServerKeyString_PureGeneration(t *testing.T) {
 	after := len(cfg.GetServerKeys())
 	if after != before {
 		t.Errorf("GenerateServerKeyString polluted DB: before=%d, after=%d", before, after)
+	}
+}
+
+// TestSetProviderQuotaBlockEnabled_Persists 守护 quota_block_enabled 列在 DB 中正确持久化：
+// SetProviderQuotaBlockEnabled 后，in-memory QuotaBlockEnabled map 必须更新；
+// 重新 Load 一份 Config 后，map 必须保留 true（round-trip 通过 DB）。
+func TestSetProviderQuotaBlockEnabled_Persists(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := Provider{
+		ID: "test-provider-1", Name: "Test",
+		BaseURL: "https://api.minimaxi.com", APIKey: "sk-test",
+		Model: "general", IsActive: true,
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Order:       1,
+		IsOpenAIFormat: false,
+	}
+	if err := cfg.AddProvider(p); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	if err := cfg.SetProviderQuotaBlockEnabled(p.ID, true); err != nil {
+		t.Fatalf("SetProviderQuotaBlockEnabled: %v", err)
+	}
+	if !cfg.QuotaBlockEnabled[p.ID] {
+		t.Fatalf("in-memory QuotaBlockEnabled[%q] should be true right after Set", p.ID)
+	}
+
+	// 重新 Load 模拟重启/重读：必须从 DB 重建 map
+	cfg2 := &Config{}
+	if err := cfg2.Load(); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if !cfg2.QuotaBlockEnabled[p.ID] {
+		t.Errorf("quota_block_enabled did not round-trip through DB: cfg2.QuotaBlockEnabled[%q]=%v, want true",
+			p.ID, cfg2.QuotaBlockEnabled[p.ID])
+	}
+}
+
+// TestSetProviderQuotaBlockEnabled_OffRoundTrips 守护显式设回 false 也能持久化。
+func TestSetProviderQuotaBlockEnabled_OffRoundTrips(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := Provider{
+		ID: "p-toggle", Name: "P",
+		BaseURL: "https://api.minimaxi.com", APIKey: "sk-test",
+		Model: "general", IsActive: true,
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Order:       1,
+		IsOpenAIFormat: false,
+	}
+	if err := cfg.AddProvider(p); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	if err := cfg.SetProviderQuotaBlockEnabled(p.ID, true); err != nil {
+		t.Fatalf("set true: %v", err)
+	}
+	if err := cfg.SetProviderQuotaBlockEnabled(p.ID, false); err != nil {
+		t.Fatalf("set false: %v", err)
+	}
+
+	cfg2 := &Config{}
+	if err := cfg2.Load(); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if cfg2.QuotaBlockEnabled[p.ID] {
+		t.Errorf("expected QuotaBlockEnabled[%q]=false after toggling off, got true", p.ID)
 	}
 }
 
