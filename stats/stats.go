@@ -13,6 +13,7 @@ import (
 	"switchai/appdata"
 	"switchai/history"
 	"switchai/logger"
+	"switchai/quota"
 
 	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite"
@@ -581,12 +582,13 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	return map[string]interface{}{
 		"total_input_tokens":   totalInput,
 		"total_output_tokens":  totalOutput,
-		"total_tokens":        totalInput + totalOutput,
-		"total_cost":          totalCost,
+		"total_tokens":         totalInput + totalOutput,
+		"total_cost":           totalCost,
 		"total_request_count":  totalRequestCount,
 		"provider_stats":       providerStatsArray,
-		"key_stats":           keyStatsArray,
+		"key_stats":            keyStatsArray,
 		"recent_records":       recentRecords,
+		"provider_quotas":      quota.Snapshots(),
 	}
 }
 
