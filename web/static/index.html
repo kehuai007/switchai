@@ -1950,15 +1950,16 @@
                             输入 token: ${b.input_tokens.toLocaleString()}<br/>
                             输出 token: ${b.output_tokens.toLocaleString()}<br/>
                             请求数: ${b.request_count}<br/>
-                            花费: $${b.cost.toFixed(4)}`;
+                            花费: $${b.cost.toFixed(4)}<br/>
+                            总 Token: ${(b.input_tokens + b.output_tokens).toLocaleString()}`;
                     }
                 },
                 legend: {
-                    data: ['输入 token', '输出 token', '请求数', '花费'],
+                    data: ['输入 token', '输出 token', '总 Token', '请求数', '花费'],
                     top: 0,
                     textStyle: { color: '#4a5568', fontSize: 12 }
                 },
-                grid: { left: 60, right: 60, top: 40, bottom: 40 },
+                grid: { left: 60, right: 90, top: 40, bottom: 40 },
                 xAxis: {
                     type: 'category',
                     data: labels,
@@ -1970,6 +1971,9 @@
                     { type: 'value', name: 'Tokens / 请求数', position: 'left',
                       axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
                       splitLine: { lineStyle: { color: '#edf2f7' } } },
+                    { type: 'value', name: '总 Token', position: 'right', offset: 50,
+                      axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
+                      splitLine: { show: false } },
                     { type: 'value', name: '花费 ($)', position: 'right',
                       axisLabel: { color: '#718096', formatter: '$${value}' },
                       splitLine: { show: false } }
@@ -1989,7 +1993,11 @@
                     { name: '花费', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
                       itemStyle: { color: '#11998e' },
                       lineStyle: { color: '#11998e', width: 1.5, type: 'dashed' },
-                      data: buckets.map(b => b.cost) }
+                      data: buckets.map(b => b.cost) },
+                    { name: '总 Token', type: 'line', yAxisIndex: 2, smooth: true, symbol: 'none',
+                      itemStyle: { color: '#ed8936' },
+                      lineStyle: { color: '#ed8936', width: 2 },
+                      data: buckets.map(b => b.input_tokens + b.output_tokens) }
                 ]
             };
         }
