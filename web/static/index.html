@@ -37,8 +37,8 @@
         .provider-item-info h4 { color: #333; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
         .provider-item-info p { color: #666; font-size: 14px; margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .provider-item-info .provider-url { color: #667eea; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
-        .provider-item-stats { display: flex; gap: 20px; flex: 1 1 auto; min-width: 0; flex-shrink: 1; padding-top: 0; border-top: none; align-items: center; }
-        .provider-stat { text-align: center; }
+        .provider-item-stats { display: flex; gap: 20px; flex: 1 1 auto; min-width: 0; flex-shrink: 1; padding-top: 0; border-top: none; align-items: stretch; }
+        .provider-stat { text-align: center; display: flex; flex-direction: column; justify-content: flex-start; min-width: 60px; }
         .provider-stat-value { font-size: 16px; font-weight: bold; color: #333; }
         .provider-stat-label { font-size: 12px; color: #666; }
         .model-chips {
@@ -184,25 +184,13 @@
             max-width: 100%;
             box-sizing: border-box;
         }
-        .quota-bar-row > div:first-child {
+        .quota-bar-label {
             flex: 0 0 auto;
             min-width: 50px;
             max-width: 80px;
             text-align: right;
-        }
-        .quota-bar-label {
             font-size: 12px;
             color: #333;
-            text-align: right;
-        }
-        .quota-bar-sub {
-            font-size: 10px;
-            color: #999;
-            text-align: right;
-            margin-top: -2px;
-            text-overflow: ellipsis;
-            overflow: hidden;
-            white-space: nowrap;
         }
         .quota-bar-track {
             flex: 1 1 auto;
@@ -223,7 +211,7 @@
         .quota-bar-fill.quota-red       { background: #c0392b; }
         .quota-bar-right {
             flex: 0 0 auto;
-            max-width: 110px;
+            max-width: 140px;
             font-size: 12px;
             color: #333;
             text-align: right;
@@ -239,9 +227,7 @@
         .quota-bar-right .reset {
             font-size: 11px;
             color: #666;
-            text-overflow: ellipsis;
-            overflow: hidden;
-            white-space: nowrap;
+            word-break: keep-all;
         }
         .quota-bar-divider {
             height: 1px;
@@ -1576,10 +1562,7 @@
             // 5h row
             let row5h = `
                 <div class="quota-bar-row">
-                    <div>
-                        <div class="quota-bar-label">5h 限额</div>
-                        <div class="quota-bar-sub">${ivReset === '—' ? '—' : ivReset + ' 后重置'}</div>
-                    </div>
+                    <div class="quota-bar-label">5h 限额</div>
                     <div class="quota-bar-track">
                         <div class="quota-bar-fill quota-${ivClass}" style="width:${Math.min(iv, 100)}%"></div>
                     </div>
@@ -1593,10 +1576,7 @@
             const wkLabel = wk === 0 ? '∞ 无限' : `${wk.toFixed(1)}%`;
             let rowWeek = `
                 <div class="quota-bar-row">
-                    <div>
-                        <div class="quota-bar-label">周限额</div>
-                        <div class="quota-bar-sub">${wkReset === '—' ? '—' : wkReset + ' 后重置'}</div>
-                    </div>
+                    <div class="quota-bar-label">周限额</div>
                     <div class="quota-bar-track">
                         <div class="quota-bar-fill quota-${wkClass}" style="width:${Math.min(wk, 100)}%"></div>
                     </div>
