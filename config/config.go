@@ -482,6 +482,15 @@ func (c *Config) AddProvider(p Provider) error {
 
 	c.Providers = append(c.Providers, p)
 
+	// 同步初始化 QuotaBlockEnabled map 入口（默认值 false）。
+	// 防御 nil-map：防止后续 quota.IsBlocked 或 web 切换 handler 在
+	// 未初始化 map 上 panic / 读到 nil 零值；与 SetProviderQuotaBlockEnabled
+	// 的 nil 安全模式保持一致。
+	if c.QuotaBlockEnabled == nil {
+		c.QuotaBlockEnabled = map[string]bool{}
+	}
+	c.QuotaBlockEnabled[p.ID] = false
+
 	// 按序号排序
 	c.sortProviders()
 
@@ -520,6 +529,10 @@ func (c *Config) DeleteProvider(id string) error {
 					c.Providers[j].Order--
 				}
 			}
+
+			// 清理 QuotaBlockEnabled map 中的孤儿入口，避免长时间运行下累积。
+			// map 可能是 nil（外部代码误用），nil-map delete 在 Go 中是 no-op、安全的。
+			delete(c.QuotaBlockEnabled, id)
 
 			c.sortProviders()
 			return c.save()
