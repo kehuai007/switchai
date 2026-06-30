@@ -579,6 +579,8 @@ func deleteProvider(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Prune in-memory quota state so deleted providers don't leak forever.
+	quota.PurgeProvider(id)
 	broadcastConfigChange(c, "provider_deleted", id)
 	c.JSON(http.StatusOK, gin.H{"message": "Provider deleted"})
 }

@@ -512,6 +512,7 @@
 
     <script>
         let providers = [];
+        let pendingQuotaUpdates = []; // {pid, q} items received before loadProviders() populates `providers`
         let ws = null;
         let serverKeys = [];
         let keyStats = {};
@@ -1375,16 +1376,39 @@
             providers.sort((a, b) => (a.order || 0) - (b.order || 0));
 
             renderProviders();
+
+            // Drain any quota updates that arrived before providers were loaded.
+            if (pendingQuotaUpdates.length) {
+                const buffered = pendingQuotaUpdates;
+                pendingQuotaUpdates = [];
+                const merged = {};
+                for (const { pid, q } of buffered) {
+                    merged[pid] = q;
+                }
+                applyQuotaUpdate(merged);
+            }
         }
 
         function applyQuotaUpdate(quotas) {
             for (const pid in quotas) {
                 const p = providers.find(x => x.id === pid);
-                if (!p) continue;
+                if (!p) {
+                    // Provider list not loaded yet — buffer so we can replay once it is.
+                    pendingQuotaUpdates.push({ pid, q: quotas[pid] });
+                    continue;
+                }
                 const q = quotas[pid];
                 p.quota_enabled  = !!(q.interval && q.interval.enabled);
                 p.quota_interval = q.interval;
                 p.quota_weekly   = q.weekly;
+                // Propagate upstream last_error (JSON may use snake_case or PascalCase
+                // depending on serializer); clear stale error on a successful update.
+                const err = q.interval && (q.interval.last_error || q.interval.LastError);
+                if (err) {
+                    p.quota_error = err;
+                } else {
+                    delete p.quota_error;
+                }
                 // Narrow DOM update: replace quota card text only.
                 const card = document.querySelector(`.quota-stat[data-pid="${pid}"]`);
                 if (card) {

@@ -1,6 +1,6 @@
 // Package quota polls MiniMax token-plan usage for active providers and
 // surfaces a per-provider, per-window (interval + weekly) snapshot in
-// memory. Snapshots are exposed via Snapshot() and consumed by the web
+// memory. Snapshots are exposed via Snapshots() and consumed by the web
 // layer (provider-item-stats card) and the proxy layer (request gating).
 package quota
 
@@ -287,8 +287,10 @@ type eligibleProvider struct {
 // for concurrent reads; tests should serialize via stateMu if needed.
 func SetSnapshotForTest(id string, snap *Snapshot) { setSnapshot(id, snap) }
 
-// ClearForTest removes a snapshot and its toggle. Test-only.
-func ClearForTest(id string) {
+// PurgeProvider removes a provider's quota state (snapshot + block flag)
+// from the in-memory maps. Called when a provider is deleted from config
+// so the maps do not grow forever. Safe to call for unknown IDs (no-op).
+func PurgeProvider(id string) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	delete(snapshots, id)

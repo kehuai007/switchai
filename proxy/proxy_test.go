@@ -379,7 +379,7 @@ func TestProxy_QuotaBlocked_ToggleOn(t *testing.T) {
 			UsedPercent: 50,
 		},
 	})
-	defer quota.ClearForTest("blocked-provider")
+	defer quota.PurgeProvider("blocked-provider")
 
 	r := newTestEngine()
 	req := buildQuotaTestRequest(t, rawKey, "alias-blocked")
@@ -443,7 +443,7 @@ func TestProxy_QuotaBlocked_ToggleOff(t *testing.T) {
 		ProviderID: "free-provider",
 		Interval:   quota.IntervalWindow{Enabled: true, UsedPercent: 99.5},
 	})
-	defer quota.ClearForTest("free-provider")
+	defer quota.PurgeProvider("free-provider")
 
 	r := newTestEngine()
 	req := buildQuotaTestRequest(t, rawKey, "alias-free")
