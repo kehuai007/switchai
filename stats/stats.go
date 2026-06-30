@@ -104,6 +104,12 @@ func Init() {
 		return
 	}
 
+	// 清理 7 天前的 token 历史
+	sevenDaysAgo := time.Now().AddDate(0, 0, -7).UnixNano() / 1e10 * 10
+	if _, err := db.Exec(`DELETE FROM provider_token_history WHERE t_bucket < ?`, sevenDaysAgo); err != nil {
+		logger.Error("Failed to cleanup old provider_token_history: %v", err)
+	}
+
 	stats = &Stats{
 		clients:   make(map[*websocket.Conn]bool),
 		broadcast: make(chan UsageRecord, 100),
@@ -170,6 +176,19 @@ func initDB() error {
 	CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp DESC);
 	CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_records(provider_id);
 	CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_records(key_id);
+
+	CREATE TABLE IF NOT EXISTS provider_token_history (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id   TEXT    NOT NULL,
+		t_bucket      INTEGER NOT NULL,
+		input_tokens  INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens  INTEGER NOT NULL DEFAULT 0,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(provider_id, t_bucket)
+	);
+	CREATE INDEX IF NOT EXISTS idx_pth_pid_t
+		ON provider_token_history(provider_id, t_bucket DESC);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -457,6 +476,22 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 			logger.Error("Failed to upsert key daily stats: %v", err)
 			return
 		}
+	}
+
+	// 累加 provider_token_history（10s 桶）
+	tb := time.Now().UnixNano() / 1e10 * 10
+	_, err = tx.Exec(`
+		INSERT INTO provider_token_history (provider_id, t_bucket, input_tokens, output_tokens, total_tokens, request_count)
+		VALUES (?, ?, ?, ?, ?, 1)
+		ON CONFLICT(provider_id, t_bucket) DO UPDATE SET
+			input_tokens  = input_tokens  + excluded.input_tokens,
+			output_tokens = output_tokens + excluded.output_tokens,
+			total_tokens  = total_tokens  + excluded.total_tokens,
+			request_count = request_count + 1`,
+		providerID, tb, inputTokens, outputTokens, inputTokens+outputTokens)
+	if err != nil {
+		logger.Error("Failed to upsert provider_token_history: %v", err)
+		return
 	}
 
 	if err := tx.Commit(); err != nil {

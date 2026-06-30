@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS key_daily_stats (
 	total_cost REAL DEFAULT 0,
 	PRIMARY KEY (key_id, date)
 );
+
+CREATE TABLE IF NOT EXISTS provider_token_history (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	provider_id   TEXT    NOT NULL,
+	t_bucket      INTEGER NOT NULL,
+	input_tokens  INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	total_tokens  INTEGER NOT NULL DEFAULT 0,
+	request_count INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(provider_id, t_bucket)
+);
 `
 
 // trimUsageRecordsToLimit 模拟 RecordUsage 中维持 1000 行上限的 DELETE，
@@ -713,5 +724,31 @@ func TestGetKeyTodayBuckets_7d(t *testing.T) {
 	// Date 字段应为今天
 	if stats.Date != todayDate {
 		t.Errorf("stats.Date = %s, want %s", stats.Date, todayDate)
+	}
+}
+
+// TestRecordUsage_AccumulatesProviderTokenHistory 守护：RecordUsage 必须在 provider_token_history
+// 表里按 10s 桶累计 input/output/total tokens 和 request_count，ON CONFLICT 加和而非覆盖。
+// 否则配额历史弹窗拿不到趋势数据。
+func TestRecordUsage_AccumulatesProviderTokenHistory(t *testing.T) {
+	defer setupTestDB(t)()
+	t.Cleanup(withTestStats(t))
+
+	pid := "test-provider-token"
+	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat",
+		100, 50, 0.01, 200, 100, "k1", "1.2.3.4")
+	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat",
+		200, 80, 0.02, 200, 100, "k1", "1.2.3.4")
+
+	tb := (time.Now().UnixNano() / 1e10) * 10
+
+	var in, out, tot, cnt int
+	row := db.QueryRow(`SELECT input_tokens, output_tokens, total_tokens, request_count
+		FROM provider_token_history WHERE provider_id=? AND t_bucket=?`, pid, tb)
+	if err := row.Scan(&in, &out, &tot, &cnt); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if in != 300 || out != 130 || tot != 430 || cnt != 2 {
+		t.Errorf("want 300/130/430/2 got %d/%d/%d/%d", in, out, tot, cnt)
 	}
 }
