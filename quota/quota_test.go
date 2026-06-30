@@ -5,6 +5,23 @@ import (
 	"time"
 )
 
+// TestShutdown_BeforeInit_NoBlock verifies that calling Shutdown without
+// ever calling Init returns promptly instead of blocking forever on the
+// never-closed done channel.
+func TestShutdown_BeforeInit_NoBlock(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// good: Shutdown returned without blocking
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown blocked for >2s when Init was never called")
+	}
+}
+
 func TestIsQuotaHost(t *testing.T) {
 	cases := []struct {
 		baseURL string

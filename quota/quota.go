@@ -157,25 +157,41 @@ func BlockEnabledFlags() map[string]bool {
 // cannot start; call Shutdown to stop.
 func Init(ctx context.Context) error {
 	loadBlockFlagsFromConfig()
+	stateMu.Lock()
+	started = true
+	stateMu.Unlock()
 	go runLoop(ctx)
 	return nil
 }
 
 // Shutdown signals the polling loop to exit and waits up to 5s for
-// in-flight polls to drain.
+// in-flight polls to drain. Safe to call before Init (no-op).
 func Shutdown() {
 	cancelOnce.Do(func() {
-		if cancel != nil {
-			cancel()
+		stateMu.RLock()
+		c := cancel
+		stateMu.RUnlock()
+		if c != nil {
+			c()
 		}
 	})
-	<-done
+	stateMu.RLock()
+	wasStarted := started
+	stateMu.RUnlock()
+	if !wasStarted {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 var (
 	cancel     context.CancelFunc
 	cancelOnce sync.Once
 	done       = make(chan struct{})
+	started    bool // set true when Init() launches the polling goroutine
 )
 
 // runLoop is the ticker goroutine.
