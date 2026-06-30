@@ -250,12 +250,6 @@ func QueryQuotaHistory(providerID, window string, fromTs, toTs int64, aggregate 
 // records). aggregate=true → 5min SUM. Filters out buckets where
 // total_tokens=0. stats package owns the schema and writes; this is a
 // read-only convenience wrapper for the quota-package API handlers.
-//
-// fromTs/toTs are SECONDS-scale Unix timestamps (matching the web handler
-// spec: from_ts = now - (5h|1h|7d).Seconds()). Internally they are
-// converted to nanoseconds because stats.RecordUsage stores t_bucket at
-// nanosecond scale (UnixNano-rounded 10s buckets). Callers must pass
-// seconds, not nanoseconds — this is the public API contract.
 func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([]TokenPoint, error) {
 	if err := initStatsDB(); err != nil {
 		return nil, err
@@ -266,11 +260,6 @@ func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([
 	if db == nil {
 		return nil, nil
 	}
-	// Convert seconds-scale caller inputs to nanoseconds-scale DB keys.
-	// UnixNano for ~2026 is ~1.7e18 (well under int64 max ~9.2e18), so
-	// fromTs/toTs (<= now in seconds = ~1.7e9) * 1e9 stays in range.
-	fromNs := fromTs * int64(time.Second)
-	toNs := toTs * int64(time.Second)
 	var (
 		rows *sql.Rows
 		err  error
@@ -283,15 +272,15 @@ func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([
 			WHERE provider_id=? AND t_bucket BETWEEN ? AND ?
 			GROUP BY bucket
 			ORDER BY bucket ASC`,
-			int64(aggregateBucket)*int64(time.Second), int64(aggregateBucket)*int64(time.Second),
-			providerID, fromNs, toNs)
+			aggregateBucket, aggregateBucket,
+			providerID, fromTs, toTs)
 	} else {
 		rows, err = db.Query(`
 			SELECT t_bucket, input_tokens, output_tokens, total_tokens, request_count
 			FROM provider_token_history
 			WHERE provider_id=? AND t_bucket BETWEEN ? AND ? AND total_tokens > 0
 			ORDER BY t_bucket ASC`,
-			providerID, fromNs, toNs)
+			providerID, fromTs, toTs)
 	}
 	if err != nil {
 		return nil, err
@@ -303,10 +292,6 @@ func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([
 		if err := rows.Scan(&p.T, &p.InputTokens, &p.OutputTokens, &p.TotalTokens, &p.RequestCount); err != nil {
 			return nil, err
 		}
-		// Convert nanoseconds-scale t (as stored in stats.db) back to
-		// seconds for the JSON response — matches quota_history.t and
-		// the web chart's expectation (new Date(t * 1000)).
-		p.T = p.T / int64(time.Second)
 		out = append(out, p)
 	}
 	return out, rows.Err()
