@@ -1,6 +1,7 @@
 package web
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	_ "modernc.org/sqlite"
 )
 
 func newTestRouter() *gin.Engine {
@@ -95,6 +97,91 @@ func TestGetQuotaHistory_EmptyReturnsEmptyPoints(t *testing.T) {
 	}
 	if resp.Window != "interval" || resp.Range != "5h" {
 		t.Errorf("bad echo: %+v", resp)
+	}
+	if resp.Points == nil {
+		t.Errorf("points should be [], got null")
+	}
+}
+
+// TestGetQuotaHistory_HappyPath exercises the 200 path with valid params
+// and asserts the response shape (window/range echoed, points is [] not
+// null, current is an object).
+func TestGetQuotaHistory_HappyPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("SWITCHAI_DATA_DIR", tmpDir)
+	if err := os.WriteFile(filepath.Join(tmpDir, "stats.db"), nil, 0o644); err != nil {
+		t.Fatalf("seed stats.db: %v", err)
+	}
+	r := newTestRouter()
+	req := httptest.NewRequest("GET", "/api/providers/p-happy/quota-history?window=interval&range=5h", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	quota.ShutdownHistory()
+	var resp struct {
+		Window  string                   `json:"window"`
+		Range   string                   `json:"range"`
+		Points  []map[string]interface{} `json:"points"`
+		Current map[string]interface{}   `json:"current"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.Window != "interval" || resp.Range != "5h" {
+		t.Errorf("bad echo: window=%q range=%q", resp.Window, resp.Range)
+	}
+	if resp.Points == nil {
+		t.Errorf("points should be [], got null")
+	}
+	if resp.Current == nil {
+		t.Errorf("current should be an object, got null")
+	}
+}
+
+// TestGetTokenHistory_HappyPath exercises the 200 path with valid params
+// and asserts the response shape (range echoed, points is [] not null).
+func TestGetTokenHistory_HappyPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("SWITCHAI_DATA_DIR", tmpDir)
+	// Pre-seed stats.db with the provider_token_history schema so the
+	// read-only QueryTokenHistory query does not 500 on a missing table.
+	statsPath := filepath.Join(tmpDir, "stats.db")
+	sdb, err := sql.Open("sqlite", statsPath)
+	if err != nil {
+		t.Fatalf("open stats.db: %v", err)
+	}
+	if _, err := sdb.Exec(`CREATE TABLE IF NOT EXISTS provider_token_history (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id   TEXT    NOT NULL,
+		t_bucket      INTEGER NOT NULL,
+		input_tokens  INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens  INTEGER NOT NULL DEFAULT 0,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(provider_id, t_bucket)
+	);`); err != nil {
+		t.Fatalf("init stats schema: %v", err)
+	}
+	_ = sdb.Close()
+	r := newTestRouter()
+	req := httptest.NewRequest("GET", "/api/providers/p-happy/token-history?range=5h", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	quota.ShutdownHistory()
+	var resp struct {
+		Range  string                   `json:"range"`
+		Points []map[string]interface{} `json:"points"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.Range != "5h" {
+		t.Errorf("bad echo: range=%q", resp.Range)
 	}
 	if resp.Points == nil {
 		t.Errorf("points should be [], got null")

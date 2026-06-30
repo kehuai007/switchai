@@ -647,7 +647,8 @@ func getQuotaHistory(c *gin.Context) {
 	now := time.Now().Unix()
 	points, err := quota.QueryQuotaHistory(pid, window, now-secs, now, rng == "7d")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("getQuotaHistory failed for provider %s window %s range %s: %v", pid, window, rng, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 	if points == nil {
@@ -684,7 +685,8 @@ func getTokenHistory(c *gin.Context) {
 	now := time.Now().Unix()
 	points, err := quota.QueryTokenHistory(pid, now-secs, now, rng == "7d")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("getTokenHistory failed for provider %s range %s: %v", pid, rng, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 	if points == nil {
