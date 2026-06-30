@@ -438,6 +438,44 @@ func GetConfig() *Config {
 	return cfg
 }
 
+// GetQuotaBlockEnabled returns a snapshot of the per-provider quota
+// block-enforcement flags (provider_id -> enabled). Used by the quota
+// package at startup (loadBlockFlagsFromConfig) to hydrate its in-memory
+// map. Returns nil if the config singleton has not been initialized.
+//
+// The returned map is a copy safe to iterate without holding the lock.
+func GetQuotaBlockEnabled() map[string]bool {
+	if cfg == nil {
+		return nil
+	}
+	cfg.mu.RLock()
+	defer cfg.mu.RUnlock()
+	out := make(map[string]bool, len(cfg.QuotaBlockEnabled))
+	for k, v := range cfg.QuotaBlockEnabled {
+		out[k] = v
+	}
+	return out
+}
+
+// IterateProviders invokes fn with each provider snapshot under the
+// config's read lock. Iteration order is the slice's natural order
+// (sorted by Order). The provider pointer passed to fn aliases the
+// internal slice element — callers MUST NOT mutate the pointed-to
+// Provider. Returns nil if the config singleton has not been initialized.
+//
+// Used by the quota package (eligibleProviders) to enumerate providers
+// without exposing the unexported mutex.
+func IterateProviders(fn func(p *Provider)) {
+	if cfg == nil {
+		return
+	}
+	cfg.mu.RLock()
+	defer cfg.mu.RUnlock()
+	for i := range cfg.Providers {
+		fn(&cfg.Providers[i])
+	}
+}
+
 // GetFirstActiveProvider 返回第一个 IsActive=true 的 provider，用于 testProvider 等场景。
 func (c *Config) GetFirstActiveProvider() *Provider {
 	c.mu.RLock()

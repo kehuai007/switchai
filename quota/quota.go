@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"switchai/config"
 	"sync"
 	"time"
 )
@@ -265,10 +266,15 @@ func markError(id, msg string) {
 }
 
 // loadBlockFlagsFromConfig hydrates blockEnabled from the config DB.
-// Wired in Task 6.
+// Called once at startup by Init; safe to call again after a config
+// reload — entries not present in the new snapshot are not removed.
 func loadBlockFlagsFromConfig() {
-	// Wired in Task 6. Until then, no-op.
-	// config.GetQuotaBlockEnabled() will be called here once available.
+	flags := config.GetQuotaBlockEnabled()
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	for k, v := range flags {
+		blockEnabled[k] = v
+	}
 }
 
 // eligibleProvider is the minimal view of a provider needed by the poller.
@@ -277,9 +283,20 @@ type eligibleProvider struct {
 	key string
 }
 
-// eligibleProviders returns the providers we should poll. Wired in Task 6
-// via config.GetConfig().Providers filtered by isQuotaHost / IsActive.
+// eligibleProviders returns the providers we should poll: those that are
+// active, have an API key configured, and whose BaseURL targets the
+// upstream quota host (minimaxi.com / *.minimaxi.com). Returns nil if
+// the config singleton has not been initialized.
 func eligibleProviders() []eligibleProvider {
-	// Task 5+6 will wire to config.GetConfig().Providers
-	return nil
+	if config.GetConfig() == nil {
+		return nil
+	}
+	var out []eligibleProvider
+	config.IterateProviders(func(p *config.Provider) {
+		if !p.IsActive || p.APIKey == "" || !isQuotaHost(p.BaseURL) {
+			return
+		}
+		out = append(out, eligibleProvider{id: p.ID, key: p.APIKey})
+	})
+	return out
 }
