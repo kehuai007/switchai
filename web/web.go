@@ -30,6 +30,29 @@ var (
 	loginCookie = "switchai_auth"
 )
 
+// validWindows is the whitelist of accepted `window` query values for
+// /providers/:id/quota-history. Anything else returns 400.
+var validWindows = map[string]bool{"interval": true, "weekly": true}
+
+// validRanges is the whitelist of accepted `range` query values for
+// /providers/:id/quota-history and /providers/:id/token-history.
+var validRanges = map[string]bool{"5h": true, "1h": true, "7d": true}
+
+// rangeToSeconds converts a whitelisted range string to a duration in
+// seconds. Callers MUST validate against validRanges first; unmapped
+// values return 0 (handler should reject before calling).
+func rangeToSeconds(r string) int64 {
+	switch r {
+	case "5h":
+		return 5 * 3600
+	case "1h":
+		return 3600
+	case "7d":
+		return 7 * 24 * 3600
+	}
+	return 0
+}
+
 // 生成随机字符串
 func generateRandomString(length int) string {
 	bytes := make([]byte, length)
@@ -97,6 +120,8 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/providers/fetch-models", fetchModelsByCredentials)
 		api.POST("/providers/:id/fetch-models", fetchProviderModels)
 		api.PUT("/providers/:id/quota-block-enabled", setQuotaBlockEnabled)
+		api.GET("/providers/:id/quota-history", getQuotaHistory)
+		api.GET("/providers/:id/token-history", getTokenHistory)
 
 		// 统计信息
 		api.GET("/stats", getStats)
@@ -605,6 +630,70 @@ func setQuotaBlockEnabled(c *gin.Context) {
 	}
 	quota.SetBlockEnabled(id, body.Enabled)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// getQuotaHistory returns time-series points for one provider's quota window
+// over a whitelisted range. The optional `current` field carries the latest
+// in-memory snapshot for the modal footer.
+func getQuotaHistory(c *gin.Context) {
+	pid := c.Param("id")
+	window := c.Query("window")
+	rng := c.Query("range")
+	if !validWindows[window] || !validRanges[rng] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "window 必须为 interval/weekly，range 必须为 5h/1h/7d"})
+		return
+	}
+	secs := rangeToSeconds(rng)
+	now := time.Now().Unix()
+	points, err := quota.QueryQuotaHistory(pid, window, now-secs, now, rng == "7d")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if points == nil {
+		points = []quota.QuotaPoint{}
+	}
+	// 附加 current 快照（来自内存），便于 modal footer 显示
+	current := gin.H{}
+	if snap := quota.GetCurrentSnapshot(pid, window); snap != nil {
+		current = gin.H{
+			"used_percent":   snap.UsedPercent,
+			"reset_in_human": snap.ResetInHuman,
+			"end_time":       snap.EndTime,
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"window":  window,
+		"range":   rng,
+		"points":  points,
+		"current": current,
+	})
+}
+
+// getTokenHistory returns time-series points for one provider's token usage
+// over a whitelisted range. 7d range aggregates per-day; shorter ranges are
+// raw.
+func getTokenHistory(c *gin.Context) {
+	pid := c.Param("id")
+	rng := c.Query("range")
+	if !validRanges[rng] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "range 必须为 5h/1h/7d"})
+		return
+	}
+	secs := rangeToSeconds(rng)
+	now := time.Now().Unix()
+	points, err := quota.QueryTokenHistory(pid, now-secs, now, rng == "7d")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if points == nil {
+		points = []quota.TokenPoint{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"range":  rng,
+		"points": points,
+	})
 }
 
 func activateProvider(c *gin.Context) {

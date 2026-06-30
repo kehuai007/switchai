@@ -134,6 +134,28 @@ func Snapshots() map[string]*Snapshot {
 	return out
 }
 
+// GetCurrentSnapshot returns the latest IntervalWindow or WeeklyWindow for
+// the provider's in-memory snapshot, or nil if unknown. The web layer uses
+// this to populate the quota-history modal footer. Callers MUST treat the
+// returned value as read-only.
+func GetCurrentSnapshot(providerID, window string) *IntervalWindow {
+	stateMu.RLock()
+	defer stateMu.RUnlock()
+	snap := snapshots[providerID]
+	if snap == nil {
+		return nil
+	}
+	switch window {
+	case "interval":
+		w := snap.Interval
+		return &w
+	case "weekly":
+		w := snap.Weekly
+		return &w
+	}
+	return nil
+}
+
 // SetBlockEnabled updates the in-memory enforcement flag. The web layer
 // also persists this via config.SetProviderQuotaBlockEnabled.
 func SetBlockEnabled(providerID string, enabled bool) {
