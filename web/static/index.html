@@ -74,6 +74,14 @@
             white-space: nowrap;
             line-height: 1.4;
         }
+        .model-line { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; flex-wrap: wrap; }
+        .model-line-empty { color: #999; }
+        .model-format-block { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; max-width: 100%; }
+        .model-format-row { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: 13px; color: #333; }
+        .model-format-row .model-chips { max-height: none; overflow: visible; cursor: default; flex: 1 1 auto; }
+        .model-format-key { font-size: 12px; color: #666; flex-shrink: 0; min-width: 32px; }
+        .model-format-value { font-weight: 600; color: #333; }
+        .provider-stat-models { align-items: stretch; }
         .provider-item-actions { display: flex; gap: 8px; flex: 0 0 auto; flex-shrink: 0; flex-wrap: nowrap; margin-left: auto; align-items: center; }
         button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
         .btn-primary { background: #667eea; color: white; }
@@ -1516,23 +1524,32 @@
         function renderModelChips(modelStr) {
             const models = (modelStr || '').split(';').map(s => s.trim()).filter(s => s);
             if (models.length === 0) {
-                return `<div class="provider-stat">
-                    <div class="provider-stat-value" style="color: #999;">—</div>
-                    <div class="provider-stat-label">模型</div>
-                </div>`;
+                return `<div class="model-line"><span class="model-line-empty">—</span></div>`;
             }
             const visible = models.slice(0, 2);
             const more = models.length - visible.length;
             const chips = visible.map(m => `<span class="model-chip">${escapeHtml(m)}</span>`).join('');
             const moreChip = more > 0 ? `<span class="model-chip-more">+${more}</span>` : '';
-            return `<div class="provider-stat">
-                <div class="provider-stat-value">
-                    <div class="model-chips" title="${models.length} 个模型，悬停展开">
-                        ${chips}${moreChip}
+            return `<div class="model-line model-chips" title="${models.length} 个模型，悬停展开">${chips}${moreChip}</div>`;
+        }
+
+        // 合并「模型」与「格式」为一个区块，两行布局：
+        //   第一行：模型 chip 列表 (xxx,xxx+6)
+        //   第二行：格式 Anthropic / OpenAI
+        function renderModelFormatStat(p) {
+            const format = p.is_openai_format ? 'OpenAI' : 'Anthropic';
+            return `
+                <div class="model-format-block">
+                    <div class="model-format-row model-format-models">
+                        <span class="model-format-key">模型</span>
+                        ${renderModelChips(p.model)}
+                    </div>
+                    <div class="model-format-row model-format-format">
+                        <span class="model-format-key">格式</span>
+                        <span class="model-format-value">${format}</span>
                     </div>
                 </div>
-                <div class="provider-stat-label">模型 (${models.length})</div>
-            </div>`;
+            `;
         }
 
         function escapeHtml(str) {
@@ -1609,10 +1626,8 @@
                         </div>
                     </div>
                     <div class="provider-item-stats">
-                        ${renderModelChips(p.model)}
-                        <div class="provider-stat">
-                            <div class="provider-stat-value">${p.is_openai_format ? 'OpenAI' : 'Anthropic'}</div>
-                            <div class="provider-stat-label">格式</div>
+                        <div class="provider-stat provider-stat-models">
+                            ${renderModelFormatStat(p)}
                         </div>
                         <div class="provider-stat quota-stat" data-pid="${p.id}" style="display:${p.quota_enabled ? '' : 'none'}">
                             ${renderQuotaBars(p)}
