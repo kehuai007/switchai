@@ -16,6 +16,7 @@ import (
 	"strings"
 	"switchai/config"
 	"switchai/history"
+	"switchai/quota"
 	"switchai/stats"
 	"time"
 
@@ -95,6 +96,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/providers/:id/test", testProvider)
 		api.POST("/providers/fetch-models", fetchModelsByCredentials)
 		api.POST("/providers/:id/fetch-models", fetchProviderModels)
+		api.PUT("/providers/:id/quota-block-enabled", setQuotaBlockEnabled)
 
 		// 统计信息
 		api.GET("/stats", getStats)
@@ -469,6 +471,45 @@ func getProviders(c *gin.Context) {
 		providers[i] = p
 		providers[i].APIKey = "" // 返回空，避免泄露
 	}
+	snaps := quota.Snapshots()
+	flags := quota.BlockEnabledFlags()
+	for i := range providers {
+		pid := providers[i].ID
+		if snap, ok := snaps[pid]; ok && snap != nil {
+			if snap.Interval.LastSuccessAt.IsZero() {
+				if snap.Interval.LastError != "" {
+					providers[i].QuotaError = snap.Interval.LastError
+				}
+			} else {
+				providers[i].QuotaInterval = config.QuotaWindowJSON{
+					Enabled:          true,
+					RemainingPercent: snap.Interval.RemainingPercent,
+					UsedPercent:      snap.Interval.UsedPercent,
+					StartTime:        snap.Interval.StartTime.UnixMilli(),
+					EndTime:          snap.Interval.EndTime.UnixMilli(),
+					ResetInSec:       snap.Interval.ResetInSec,
+					ResetInHuman:     snap.Interval.ResetInHuman,
+					TotalCount:       snap.Interval.TotalCount,
+					UsageCount:       snap.Interval.UsageCount,
+					Status:           snap.Interval.Status,
+				}
+				providers[i].QuotaWeekly = config.QuotaWindowJSON{
+					Enabled:          true,
+					RemainingPercent: snap.Weekly.RemainingPercent,
+					UsedPercent:      snap.Weekly.UsedPercent,
+					StartTime:        snap.Weekly.StartTime.UnixMilli(),
+					EndTime:          snap.Weekly.EndTime.UnixMilli(),
+					ResetInSec:       snap.Weekly.ResetInSec,
+					ResetInHuman:     snap.Weekly.ResetInHuman,
+					TotalCount:       snap.Weekly.TotalCount,
+					UsageCount:       snap.Weekly.UsageCount,
+					Status:           snap.Weekly.Status,
+				}
+			}
+			providers[i].QuotaEnabled = snap.Interval.Enabled
+		}
+		providers[i].QuotaBlockEnabled = flags[pid]
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"providers": providers,
 	})
@@ -540,6 +581,28 @@ func deleteProvider(c *gin.Context) {
 	}
 	broadcastConfigChange(c, "provider_deleted", id)
 	c.JSON(http.StatusOK, gin.H{"message": "Provider deleted"})
+}
+
+func setQuotaBlockEnabled(c *gin.Context) {
+	id := c.Param("id")
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	cfg := config.GetConfig()
+	if cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config not loaded"})
+		return
+	}
+	if err := cfg.SetProviderQuotaBlockEnabled(id, body.Enabled); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	quota.SetBlockEnabled(id, body.Enabled)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func activateProvider(c *gin.Context) {
