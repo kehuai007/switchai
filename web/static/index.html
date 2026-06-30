@@ -1633,7 +1633,7 @@
                             ${renderQuotaBars(p)}
                             <label class="quota-block-toggle" data-pid="${p.id}">
                                 <input type="checkbox" class="quota-block-cb" ${p.quota_block_enabled ? 'checked' : ''} />
-                                拦截
+                                限额拦截
                             </label>
                         </div>
                     </div>
@@ -2115,6 +2115,23 @@
             }
         }
 
+        function formatTokenCount(v) {
+            // 自动选择 k / M / B 单位，并 trim 末尾的 0（1500 → 1.5k 而不是 1,500.00）
+            if (v >= 1e9) {
+                const n = v / 1e9;
+                return (n >= 100 ? n.toFixed(1) : n.toFixed(2)).replace(/\.?0+$/, '') + 'B';
+            }
+            if (v >= 1e6) {
+                const n = v / 1e6;
+                return (n >= 100 ? n.toFixed(1) : n.toFixed(2)).replace(/\.?0+$/, '') + 'M';
+            }
+            if (v >= 1e3) {
+                const n = v / 1e3;
+                return (n >= 100 ? n.toFixed(1) : n.toFixed(2)).replace(/\.?0+$/, '') + 'k';
+            }
+            return String(v);
+        }
+
         function buildKeyChartOption(data) {
             const labels = data.bucket === '5h'
                 ? ['00–05', '05–10', '10–15', '15–20', '20–24']
@@ -2156,15 +2173,15 @@
                                 : tEnd.toLocaleDateString())
                             : tEnd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
                         return `<b>${tStart.toLocaleString()} - ${tEndLabel}</b><br/>
-                            输入 token: ${b.input_tokens.toLocaleString()}<br/>
-                            输出 token: ${b.output_tokens.toLocaleString()}<br/>
-                            请求数: ${b.request_count}<br/>
+                            输入 token: ${formatTokenCount(b.input_tokens)}<br/>
+                            输出 token: ${formatTokenCount(b.output_tokens)}<br/>
+                            请求数: ${b.request_count.toLocaleString()}<br/>
                             花费: $${b.cost.toFixed(4)}<br/>
-                            总 Token: ${(b.input_tokens + b.output_tokens).toLocaleString()}`;
+                            总 Token: ${formatTokenCount(b.input_tokens + b.output_tokens)}`;
                     }
                 },
                 legend: {
-                    data: ['输入 token', '输出 token', '总 Token', '请求数', '花费'],
+                    data: ['输入 token', '输出 token', '请求数', '花费'],
                     top: 0,
                     textStyle: { color: '#4a5568', fontSize: 12 }
                 },
@@ -2178,13 +2195,13 @@
                 },
                 yAxis: [
                     { type: 'value', name: 'Tokens / 请求数', position: 'left',
-                      axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
+                      axisLabel: { color: '#718096', formatter: v => formatTokenCount(v) },
                       splitLine: { lineStyle: { color: '#edf2f7' } } },
                     { type: 'value', name: '花费 ($)', position: 'right',
                       axisLabel: { color: '#718096', formatter: '$${value}' },
                       splitLine: { show: false } },
                     { type: 'value', name: '总 Token', position: 'right', offset: 50,
-                      axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
+                      axisLabel: { color: '#718096', formatter: v => formatTokenCount(v) },
                       splitLine: { show: false } }
                 ],
                 series: [
