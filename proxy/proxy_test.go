@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,7 +10,10 @@ import (
 	"strings"
 	"switchai/appdata"
 	"switchai/config"
+	"switchai/history"
+	"switchai/quota"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -283,5 +287,173 @@ func TestBuildModelsListResponseJSONShape(t *testing.T) {
 	}
 	if e.Created <= 0 {
 		t.Errorf("data[].created = %d, want positive Unix timestamp", e.Created)
+	}
+}
+
+// setupQuotaTestEnv 在临时目录初始化 appdata + config，供 quota-block 测试复用。
+// 也初始化 history（proxy handler 会写历史），避免上游被命中后 AddRecord 报空指针。
+func setupQuotaTestEnv(t *testing.T) (cfg *config.Config, rawKey string) {
+	t.Helper()
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := appdata.Init(); err != nil {
+		t.Fatalf("appdata.Init: %v", err)
+	}
+	if err := config.Init(); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := history.Init(); err != nil {
+		t.Fatalf("history.Init: %v", err)
+	}
+
+	cfg = config.GetConfig()
+	key, err := cfg.GenerateServerKey()
+	if err != nil {
+		t.Fatalf("GenerateServerKey: %v", err)
+	}
+
+	t.Cleanup(func() {
+		history.Shutdown()
+		config.Shutdown()
+		_ = os.Chdir(origCwd)
+	})
+	return cfg, key
+}
+
+// buildQuotaTestRequest 给定 key/user_model 构造一个会走通 resolveRouteTarget 的
+// /v1/chat/completions 请求。OpenAI 格式；provider 的 IsOpenAIFormat 由调用方控制。
+func buildQuotaTestRequest(t *testing.T, rawKey, userModel string) *http.Request {
+	t.Helper()
+	body := `{"model":"` + userModel + `","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+// TestProxy_QuotaBlocked_ToggleOn 验证：当 provider 的配额达到上限且 toggle ON，
+// 代理应在 resolveRouteTarget 之后、URL 构建之前返回 403，并带上 window / used_percent。
+func TestProxy_QuotaBlocked_ToggleOn(t *testing.T) {
+	cfg, rawKey := setupQuotaTestEnv(t)
+
+	// 上游探测服务器——若 quota gate 没生效，请求就会到这里并返回 200。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	if err := cfg.AddProvider(config.Provider{
+		ID: "blocked-provider", Name: "Blocked", BaseURL: upstream.URL, APIKey: "k",
+		Model: "m", IsActive: true, CreatedAt: "2026-01-01T00:00:00Z", Order: 1,
+		IsOpenAIFormat: true,
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	keyID := findKeyIDByKey(cfg, rawKey)
+	if _, err := cfg.AddMapping(keyID, config.ModelMapping{
+		UserModel: "alias-blocked", ProviderID: "blocked-provider", ProviderModel: "m",
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+
+	quota.SetBlockEnabled("blocked-provider", true)
+	quota.SetSnapshotForTest("blocked-provider", &quota.Snapshot{
+		ProviderID: "blocked-provider",
+		Interval: quota.IntervalWindow{
+			Enabled:      true,
+			UsedPercent:  99.5,
+			EndTime:      time.Now().Add(time.Hour),
+			ResetInHuman: "1h 0m",
+			ResetInSec:   3600,
+		},
+		Weekly: quota.IntervalWindow{
+			Enabled:     true,
+			UsedPercent: 50,
+		},
+	})
+	defer quota.ClearForTest("blocked-provider")
+
+	r := newTestEngine()
+	req := buildQuotaTestRequest(t, rawKey, "alias-blocked")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when quota tripped, got %d; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json...", got)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v\nbody: %s", err, w.Body.String())
+	}
+	if body["window"] != "interval" {
+		t.Errorf("body.window = %v, want interval", body["window"])
+	}
+	if body["used_percent"] == nil {
+		t.Errorf("response missing used_percent; body=%s", w.Body.String())
+	} else if v, ok := body["used_percent"].(float64); !ok || v < 99.0 {
+		t.Errorf("used_percent = %v (type %T), want >= 99 float", body["used_percent"], body["used_percent"])
+	}
+	if body["error"] == nil {
+		t.Errorf("response missing error message; body=%s", w.Body.String())
+	}
+}
+
+// TestProxy_QuotaBlocked_ToggleOff 验证：即使配额达到上限，只要 toggle OFF，
+// 代理仍应照常转发到上游（绝不应因 quota gate 触发 403）。
+func TestProxy_QuotaBlocked_ToggleOff(t *testing.T) {
+	cfg, rawKey := setupQuotaTestEnv(t)
+
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	if err := cfg.AddProvider(config.Provider{
+		ID: "free-provider", Name: "Free", BaseURL: upstream.URL, APIKey: "k",
+		Model: "m", IsActive: true, CreatedAt: "2026-01-01T00:00:00Z", Order: 1,
+		IsOpenAIFormat: true,
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	keyID := findKeyIDByKey(cfg, rawKey)
+	if _, err := cfg.AddMapping(keyID, config.ModelMapping{
+		UserModel: "alias-free", ProviderID: "free-provider", ProviderModel: "m",
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+
+	// Toggle OFF + 同样爆表的配额——关键差异：不应触发 403。
+	quota.SetBlockEnabled("free-provider", false)
+	quota.SetSnapshotForTest("free-provider", &quota.Snapshot{
+		ProviderID: "free-provider",
+		Interval:   quota.IntervalWindow{Enabled: true, UsedPercent: 99.5},
+	})
+	defer quota.ClearForTest("free-provider")
+
+	r := newTestEngine()
+	req := buildQuotaTestRequest(t, rawKey, "alias-free")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("toggle off should not block, got 403; body=%s", w.Body.String())
+	}
+	if hits == 0 {
+		t.Errorf("toggle off: request should have reached upstream, hits=0")
 	}
 }

@@ -283,6 +283,18 @@ type eligibleProvider struct {
 	key string
 }
 
+// SetSnapshotForTest injects a snapshot. Test-only — not goroutine-safe
+// for concurrent reads; tests should serialize via stateMu if needed.
+func SetSnapshotForTest(id string, snap *Snapshot) { setSnapshot(id, snap) }
+
+// ClearForTest removes a snapshot and its toggle. Test-only.
+func ClearForTest(id string) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	delete(snapshots, id)
+	delete(blockEnabled, id)
+}
+
 // eligibleProviders returns the providers we should poll: those that are
 // active, have an API key configured, and whose BaseURL targets the
 // upstream quota host (minimaxi.com / *.minimaxi.com). Returns nil if

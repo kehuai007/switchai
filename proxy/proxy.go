@@ -8,6 +8,7 @@ import (
 	"compress/zlib"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"switchai/config"
 	"switchai/history"
 	"switchai/logger"
+	"switchai/quota"
 	"switchai/stats"
 	"time"
 
@@ -266,6 +268,23 @@ func proxyHandler(c *gin.Context) {
 			status = http.StatusInternalServerError
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Quota gate: 当 provider 的额度被 toggle ON 且任一窗口 ≥99% 时，
+	// 在 URL 构建之前直接返回 403，避免把请求再扔给上游。
+	if blocked, info := quota.IsBlocked(provider.ID); blocked {
+		windowName := "区间"
+		if info.Window == "weekly" {
+			windowName = "本周"
+		}
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": fmt.Sprintf("上游账户额度不足(%s窗口已用 %.1f%%)，将于 %s 后重置",
+				windowName, info.UsedPercent, info.ResetInHuman),
+			"window":       info.Window,
+			"used_percent": info.UsedPercent,
+			"reset_in_sec": info.ResetInSec,
+		})
 		return
 	}
 
