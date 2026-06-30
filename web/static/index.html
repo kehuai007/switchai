@@ -1606,7 +1606,7 @@
 
             // 5h row
             let row5h = `
-                <div class="quota-bar-row">
+                <div class="quota-bar-row" data-pid="${p.id}" data-window="interval">
                     <div class="quota-bar-label">5h 限额</div>
                     <div class="quota-bar-track">
                         <div class="quota-bar-fill quota-${ivClass}" style="width:${Math.min(iv, 100)}%"></div>
@@ -1620,7 +1620,7 @@
             // Weekly row
             const wkLabel = wk === 0 ? '∞ 无限' : `${wk.toFixed(1)}%`;
             let rowWeek = `
-                <div class="quota-bar-row">
+                <div class="quota-bar-row" data-pid="${p.id}" data-window="weekly">
                     <div class="quota-bar-label">周限额</div>
                     <div class="quota-bar-track">
                         <div class="quota-bar-fill quota-${wkClass}" style="width:${Math.min(wk, 100)}%"></div>
@@ -2255,6 +2255,144 @@
                 ]
             };
         }
+
+        // --- Quota Chart Modal ---
+        let quotaChartState = null; // {chart, pid, window, range, reqSeq}
+
+        function showQuotaChartModal(pid, window) {
+            const p = providers.find(x => x.id === pid);
+            if (!p) return;
+            const winLabel = window === 'interval' ? '5h 限额' : '周限额';
+            document.getElementById('quotaChartTitle').textContent = `${winLabel}趋势 - ${p.name}`;
+
+            const modal = document.getElementById('quotaChartModal');
+            modal.classList.add('show');
+
+            if (quotaChartState && quotaChartState.pid === pid && quotaChartState.window === window) {
+                // already showing — refresh with current range
+                loadQuotaChart(quotaChartState.range);
+                return;
+            }
+            if (quotaChartState) {
+                quotaChartState.chart.dispose();
+            }
+
+            const chartEl = document.getElementById('quotaChart');
+            chartEl.innerHTML = '';
+            const chart = echarts.init(chartEl, null, { renderer: 'canvas' });
+            quotaChartState = { chart, pid, window, range: '5h', reqSeq: 0 };
+            new ResizeObserver(() => chart.resize()).observe(chartEl);
+
+            // range toggle
+            const toggle = document.getElementById('quotaRangeToggle');
+            toggle.querySelectorAll('button').forEach(b => {
+                b.onclick = () => {
+                    toggle.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+                    b.classList.add('active');
+                    quotaChartState.range = b.dataset.range;
+                    loadQuotaChart(b.dataset.range);
+                };
+            });
+
+            loadQuotaChart('5h');
+        }
+
+        function hideQuotaChartModal() {
+            document.getElementById('quotaChartModal').classList.remove('show');
+            if (quotaChartState) {
+                quotaChartState.chart.dispose();
+                quotaChartState = null;
+            }
+        }
+
+        async function loadQuotaChart(range) {
+            if (!quotaChartState) return;
+            const { chart, pid, window, reqSeq } = quotaChartState;
+            const mySeq = quotaChartState.reqSeq = reqSeq + 1;
+            try {
+                const [quotaRes, tokenRes] = await Promise.all([
+                    fetch(`/api/providers/${pid}/quota-history?window=${window}&range=${range}`),
+                    fetch(`/api/providers/${pid}/token-history?range=${range}`),
+                ]);
+                if (mySeq !== quotaChartState.reqSeq) return;
+                if (!quotaRes.ok || !tokenRes.ok) throw new Error(`HTTP ${quotaRes.status}/${tokenRes.status}`);
+
+                const quotaData = await quotaRes.json();
+                const tokenData = await tokenRes.json();
+
+                chart.setOption(buildQuotaChartOption(quotaData, tokenData, range), true);
+
+                // footer
+                const current = quotaData.current || {};
+                document.getElementById('quotaChartCurrent').textContent =
+                    current.used_percent != null ? `当前: ${current.used_percent.toFixed(1)}%` : '';
+                document.getElementById('quotaChartReset').textContent =
+                    current.reset_in_human ? `下次重置: ${current.reset_in_human}` : '';
+            } catch (err) {
+                if (mySeq !== quotaChartState.reqSeq) return;
+                chart.setOption({
+                    title: { text: `加载失败: ${err.message}`, left: 'center', top: 'center',
+                             textStyle: { color: '#e53e3e', fontSize: 14 } }
+                }, true);
+            }
+        }
+
+        function buildQuotaChartOption(quotaData, tokenData, range) {
+            const xAxisRange = { '5h': 5*3600*1000, '1h': 3600*1000, '7d': 7*24*3600*1000 };
+            const nowMs = Date.now();
+            const startMs = nowMs - xAxisRange[range];
+
+            const qClass = quotaBarClass(quotaData.points.length ? quotaData.points[quotaData.points.length-1].used_percent : 0);
+            const colorMap = { cyan: '#22d3ee', orange: '#e67e22', redOrange: '#e67e22', red: '#c0392b' };
+            const quotaColor = colorMap[qClass] || '#22d3ee';
+
+            return {
+                grid: { left: 60, right: 70, top: 40, bottom: 50 },
+                tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                legend: { top: 4, data: ['使用率', '输入', '输出', '总Token'] },
+                xAxis: { type: 'time', min: startMs, max: nowMs },
+                yAxis: [
+                    { type: 'value', name: '使用率 %', min: 0, max: 100, position: 'left',
+                      axisLabel: { formatter: '{value}%' } },
+                    { type: 'value', name: 'Token', position: 'right',
+                      axisLabel: { formatter: v => formatTokenCount(v) } },
+                ],
+                series: [
+                    { name: '使用率', type: 'line', yAxisIndex: 0, smooth: true,
+                      connectNulls: true, showSymbol: false,
+                      itemStyle: { color: quotaColor },
+                      areaStyle: { color: quotaColor, opacity: 0.15 },
+                      data: quotaData.points.map(p => [p.t * 1000, p.used_percent]) },
+                    { name: '输入', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true, showSymbol: false,
+                      itemStyle: { color: '#3b82f6' },
+                      data: tokenData.points.map(p => [p.t * 1000, p.input_tokens]) },
+                    { name: '输出', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true, showSymbol: false,
+                      itemStyle: { color: '#a855f7' },
+                      data: tokenData.points.map(p => [p.t * 1000, p.output_tokens]) },
+                    { name: '总Token', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true, showSymbol: false,
+                      lineStyle: { width: 3 },
+                      itemStyle: { color: '#111827' },
+                      data: tokenData.points.map(p => [p.t * 1000, p.total_tokens]) },
+                ],
+            };
+        }
+
+        // Event delegation on provider list (bind once, after DOMContentLoaded)
+        document.getElementById('providerList').addEventListener('click', (e) => {
+            const row = e.target.closest('.quota-bar-row[data-pid]');
+            if (!row) return;
+            if (e.target.closest('.quota-block-toggle')) return; // don't conflict with checkbox
+            showQuotaChartModal(row.dataset.pid, row.dataset.window);
+        });
+
+        // WSS-driven refresh: if modal is open and matches the updated provider, refetch.
+        const _origApplyQuotaUpdate = applyQuotaUpdate;
+        applyQuotaUpdate = function(quotas) {
+            _origApplyQuotaUpdate(quotas);
+            if (quotaChartState && quotas[quotaChartState.pid]) {
+                loadQuotaChart(quotaChartState.range);
+            }
+        };
     </script>
     <script src="static/vendor/echarts.min.js"></script>
 </body>
