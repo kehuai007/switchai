@@ -169,6 +169,16 @@
         }
         .bucket-toggle button:hover { background: #f7fafc; }
         .chart-loading { text-align: center; padding: 40px; color: #999; }
+        .quota-stat { min-width: 110px; }
+        .quota-pct { font-weight: bold; }
+        .quota-pct.quota-cyan       { color: #22d3ee; }
+        .quota-pct.quota-orange     { color: #e67e22; }
+        .quota-pct.quota-redOrange  { color: #c0392b; }
+        .quota-pct.quota-red        { color: #c0392b; border: 1px solid #c0392b; padding: 1px 4px; }
+        .quota-err { color: #999; font-size: 13px; }
+        .quota-reset { font-size: 11px; color: #666; margin-top: 2px; }
+        .quota-block-toggle { display: block; font-size: 11px; margin-top: 4px; cursor: pointer; }
+        .quota-block-toggle input { margin-right: 3px; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -1335,6 +1345,9 @@
                     loadStats();
                     loadDailyStats();
                 }
+                if (data && data.provider_quotas) {
+                    applyQuotaUpdate(data.provider_quotas);
+                }
             };
 
             ws.onerror = (error) => {
@@ -1363,6 +1376,43 @@
 
             renderProviders();
         }
+
+        function applyQuotaUpdate(quotas) {
+            for (const pid in quotas) {
+                const p = providers.find(x => x.id === pid);
+                if (!p) continue;
+                const q = quotas[pid];
+                p.quota_enabled  = !!(q.interval && q.interval.enabled);
+                p.quota_interval = q.interval;
+                p.quota_weekly   = q.weekly;
+                // Narrow DOM update: replace quota card text only.
+                const card = document.querySelector(`.quota-stat[data-pid="${pid}"]`);
+                if (card) {
+                    card.style.display = p.quota_enabled ? '' : 'none';
+                    const valEl = card.querySelector('.quota-value');
+                    if (valEl) valEl.innerHTML = renderQuotaValue(p);
+                }
+            }
+        }
+
+        // Delegated handler: survives re-renders of provider list.
+        document.addEventListener('change', (e) => {
+            const cb = e.target.closest('.quota-block-cb');
+            if (!cb) return;
+            const pid = cb.closest('.quota-block-toggle').getAttribute('data-pid');
+            const enabled = cb.checked;
+            cb.disabled = true;
+            fetch(`/api/providers/${pid}/quota-block-enabled`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled}),
+            }).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+            }).catch(err => {
+                alert('切换失败: ' + err.message);
+                cb.checked = !enabled; // revert
+            }).finally(() => { cb.disabled = false; });
+        });
 
         async function loadStats() {
             const res = await fetch('/api/stats');
@@ -1402,6 +1452,23 @@
             }[ch]));
         }
 
+        function renderQuotaValue(p) {
+            if (p.quota_error) {
+                return `<span class="quota-err">错误</span>`;
+            }
+            const iv = (p.quota_interval && p.quota_interval.used_percent) || 0;
+            const wk = (p.quota_weekly   && p.quota_weekly.used_percent)   || 0;
+            const used = Math.max(iv, wk);
+            const isInterval = iv >= wk;
+            const reset = isInterval
+                ? ((p.quota_interval && p.quota_interval.reset_in_human) || '—')
+                : ((p.quota_weekly   && p.quota_weekly.reset_in_human)   || '—');
+            const window = isInterval ? '区间' : '本周';
+            const color = used >= 99 ? 'red' : used >= 95 ? 'redOrange' : used >= 80 ? 'orange' : 'cyan';
+            return `<span class="quota-pct quota-${color}">${used.toFixed(1)}%</span>
+                    <div class="quota-reset">${window} · ${reset}</div>`;
+        }
+
         function renderProviders() {
             const list = document.getElementById('providerList');
             if (providers.length === 0) {
@@ -1426,6 +1493,14 @@
                         <div class="provider-stat">
                             <div class="provider-stat-value">${p.is_openai_format ? 'OpenAI' : 'Anthropic'}</div>
                             <div class="provider-stat-label">格式</div>
+                        </div>
+                        <div class="provider-stat quota-stat" data-pid="${p.id}" style="display:${p.quota_enabled ? '' : 'none'}">
+                            <div class="provider-stat-value quota-value">${renderQuotaValue(p)}</div>
+                            <div class="provider-stat-label">额度</div>
+                            <label class="quota-block-toggle" data-pid="${p.id}">
+                                <input type="checkbox" class="quota-block-cb" ${p.quota_block_enabled ? 'checked' : ''} />
+                                拦截
+                            </label>
                         </div>
                     </div>
                     <div class="provider-item-actions">
