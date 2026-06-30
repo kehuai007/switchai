@@ -152,25 +152,39 @@ func formatDuration(d time.Duration) string {
 // (used by tests with httptest); pass "" to use the package default.
 // Returns the HTTP error, if any.
 func pollProvider(providerID, apiKey, host string) error {
+	snap, err := pollProviderFull(providerID, apiKey, host)
+	if err != nil {
+		return err
+	}
+	setSnapshot(providerID, snap)
+	return nil
+}
+
+// pollProviderFull fetches one provider's quota and returns the parsed
+// Snapshot without touching package state. Caller decides whether to
+// publish it via setSnapshot and/or persist it via RecordQuotaSnapshot.
+// On 401, this returns a non-nil Snapshot with UsedPercent=100 + the
+// lastSuccess timestamp so callers can decide how to surface the error.
+func pollProviderFull(providerID, apiKey, host string) (*Snapshot, error) {
 	if host == "" {
 		host = upstreamHost
 	}
 	req, err := http.NewRequest("GET", host+upstreamPath, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("User-Agent", "switchai-quota/1.0")
 
 	resp, err := upstreamHTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -186,7 +200,7 @@ func pollProvider(providerID, apiKey, host string) error {
 				lastSuccess = prev.Weekly.LastSuccessAt
 			}
 		}
-		setSnapshot(providerID, &Snapshot{
+		return &Snapshot{
 			ProviderID: providerID,
 			Interval: IntervalWindow{
 				Enabled:       true,
@@ -202,19 +216,17 @@ func pollProvider(providerID, apiKey, host string) error {
 				LastErrorAt:   time.Now(),
 				LastSuccessAt: lastSuccess,
 			},
-		})
-		return fmt.Errorf("unauthorized")
+		}, fmt.Errorf("unauthorized")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("upstream status %d", resp.StatusCode)
+		return nil, fmt.Errorf("upstream status %d", resp.StatusCode)
 	}
 	snap := parseResponse(body)
 	if snap == nil {
-		return fmt.Errorf("upstream response missing general model or base_resp error")
+		return nil, fmt.Errorf("upstream response missing general model or base_resp error")
 	}
 	snap.ProviderID = providerID
-	setSnapshot(providerID, snap)
-	return nil
+	return snap, nil
 }
 
 // setSnapshot replaces the stored snapshot for providerID.

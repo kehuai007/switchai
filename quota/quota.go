@@ -157,6 +157,9 @@ func BlockEnabledFlags() map[string]bool {
 // Init starts the 10s polling loop. Returns an error if the package
 // cannot start; call Shutdown to stop.
 func Init(ctx context.Context) error {
+	if err := InitHistory(); err != nil {
+		return err
+	}
 	loadBlockFlagsFromConfig()
 	stateMu.Lock()
 	started = true
@@ -241,12 +244,33 @@ func pollOnce() {
 		go func(id, key string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := pollProvider(id, key, upstreamHost); err != nil {
+			snap, err := pollProviderFull(id, key, upstreamHost)
+			if err != nil {
 				markError(id, err.Error())
+				return
 			}
+			setSnapshot(id, snap)
+			persistQuotaSnapshot(id, snap)
 		}(p.id, p.key)
 	}
 	wg.Wait()
+}
+
+// persistQuotaSnapshot writes one snapshot's interval + weekly (if enabled)
+// into quota_history. Errors are intentionally swallowed: persistence is
+// best-effort and a quota poll should never fail the live request path.
+func persistQuotaSnapshot(id string, snap *Snapshot) {
+	if snap == nil {
+		return
+	}
+	if snap.Interval.Enabled {
+		_ = RecordQuotaSnapshot(id, "interval",
+			snap.Interval.UsedPercent, snap.Interval.UsageCount, snap.Interval.TotalCount)
+	}
+	if snap.Weekly.Enabled {
+		_ = RecordQuotaSnapshot(id, "weekly",
+			snap.Weekly.UsedPercent, snap.Weekly.UsageCount, snap.Weekly.TotalCount)
+	}
 }
 
 // markError records an error on the existing snapshot without changing
