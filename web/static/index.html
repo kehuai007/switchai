@@ -1971,11 +1971,11 @@
                     { type: 'value', name: 'Tokens / 请求数', position: 'left',
                       axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
                       splitLine: { lineStyle: { color: '#edf2f7' } } },
-                    { type: 'value', name: '总 Token', position: 'right', offset: 50,
-                      axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
-                      splitLine: { show: false } },
                     { type: 'value', name: '花费 ($)', position: 'right',
                       axisLabel: { color: '#718096', formatter: '$${value}' },
+                      splitLine: { show: false } },
+                    { type: 'value', name: '总 Token', position: 'right', offset: 50,
+                      axisLabel: { color: '#718096', formatter: v => v >= 1000 ? (v/1000)+'k' : v },
                       splitLine: { show: false } }
                 ],
                 series: [
