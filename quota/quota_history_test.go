@@ -158,12 +158,19 @@ func TestQueryQuotaHistory_FilterZeroForToken(t *testing.T) {
 	defer cleanup()
 
 	pid := "test-zero"
-	tb := time.Now().Unix() / 10 * 10
+	// stats.RecordUsage writes t_bucket at nanosecond scale (see stats.go
+	// UnixNano() / 1e10 * 10 path), so the test fixture must mirror that
+	// scale for the QueryTokenHistory conversion to find them. Seconds
+	// here are multiplied to nanoseconds to match the production writer.
+	tb := time.Now().UnixNano() / 1e10 * 10
 
 	recordTokenBucketForTest(sdb, pid, tb, 0, 0, 0, 0)
-	recordTokenBucketForTest(sdb, pid, tb+10, 100, 50, 150, 1)
+	recordTokenBucketForTest(sdb, pid, tb+int64(10*time.Second), 100, 50, 150, 1)
 
-	points, err := QueryTokenHistory(pid, tb-10, tb+20, false)
+	// QueryTokenHistory takes seconds-scale inputs per its API contract.
+	queryFrom := tb/int64(time.Second) - 10
+	queryTo := tb/int64(time.Second) + 20
+	points, err := QueryTokenHistory(pid, queryFrom, queryTo, false)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -172,6 +179,10 @@ func TestQueryQuotaHistory_FilterZeroForToken(t *testing.T) {
 	}
 	if points[0].TotalTokens != 150 {
 		t.Errorf("want 150, got %d", points[0].TotalTokens)
+	}
+	// T must be returned in seconds (caller-visible scale), matching quota_history.
+	if points[0].T <= 0 || points[0].T > queryTo {
+		t.Errorf("T out of expected seconds range: got %d, want in [%d,%d]", points[0].T, queryFrom, queryTo)
 	}
 }
 
