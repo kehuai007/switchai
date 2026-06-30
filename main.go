@@ -13,6 +13,7 @@ import (
 	"switchai/history"
 	"switchai/logger"
 	"switchai/proxy"
+	"switchai/quota"
 	"switchai/service"
 	"switchai/stats"
 	"switchai/update"
@@ -107,6 +108,11 @@ func startServer(port string) {
 	// 初始化统计
 	stats.Init()
 
+	// 初始化配额监控
+	if err := quota.Init(context.Background()); err != nil {
+		logger.Error("Failed to initialize quota: %v", err)
+	}
+
 	// 初始化历史记录
 	if err := history.Init(); err != nil {
 		logger.Error("Failed to initialize history: %v", err)
@@ -182,6 +188,7 @@ func startServer(port string) {
 	config.Shutdown()
 
 	// 立即保存统计数据
+	quota.Shutdown()
 	stats.Shutdown()
 
 	// 关闭历史记录后台保存
