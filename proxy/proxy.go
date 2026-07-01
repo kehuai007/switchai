@@ -271,9 +271,14 @@ func proxyHandler(c *gin.Context) {
 		return
 	}
 
-	// Quota gate: 当 provider 的额度被 toggle ON 且任一窗口 ≥99% 时，
-	// 在 URL 构建之前直接返回 403，避免把请求再扔给上游。
-	if blocked, info := quota.IsBlocked(provider.ID); blocked {
+	// Quota gate: 当 provider 的额度被 toggle ON 且任一窗口 >= 阈值时，
+	// 在 URL 构建之前直接返回 403，避免把请求再扔给上游继续计费。
+	// 阈值由用户在 UI 配置（默认 99）；防御 <=0 走 DB DEFAULT 99 兜底。
+	threshold := provider.QuotaBlockThreshold
+	if threshold <= 0 {
+		threshold = 99
+	}
+	if blocked, info := quota.IsBlocked(provider.ID, float64(threshold)); blocked {
 		windowName := "区间"
 		if info.Window == "weekly" {
 			windowName = "本周"
