@@ -1470,6 +1470,11 @@
                     console.log('New token usage received, refreshing stats...');
                     loadStats();
                     loadDailyStats();
+                    // 打开中的用量统计 modal:若本次 push 来自当前 modal 的 provider,自动 reload,
+                    // 让 token 曲线随每次请求实时刷新。
+                    if (usageChartState && data.provider_id === usageChartState.pid) {
+                        loadUsageChart(usageChartState.range);
+                    }
                 }
                 if (data && data.provider_quotas) {
                     applyQuotaUpdate(data.provider_quotas);
