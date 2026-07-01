@@ -410,10 +410,16 @@ func (c *Config) save() error {
 		if c.QuotaBlockEnabled[p.ID] {
 			quotaBlock = 1
 		}
-		// QuotaBlockThreshold 由 DB DEFAULT 99 提供兜底；当 p.QuotaBlockThreshold==0
-		// （即调用方未显式设值，例如旧 Provider 调用栈或测试构造），依赖 DEFAULT 99。
-		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format, quota_block_enabled, quota_block_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat, quotaBlock, p.QuotaBlockThreshold)
+		// QuotaBlockThreshold 由 DB DEFAULT 99 提供兜底：当 p.QuotaBlockThreshold==0
+		// （即调用方未显式设值，例如旧 Provider 调用栈或测试构造），省略 INSERT 列以让
+		// SQLite 触发 DEFAULT 99。不在 Go 层做 ==0 翻译，避免把"用户显式存 0"和"未设值"混在一起。
+		if p.QuotaBlockThreshold == 0 {
+			_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format, quota_block_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat, quotaBlock)
+		} else {
+			_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format, quota_block_enabled, quota_block_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat, quotaBlock, p.QuotaBlockThreshold)
+		}
 		if err != nil {
 			return err
 		}
@@ -606,6 +612,23 @@ func (c *Config) SetProviderQuotaBlockEnabled(id string, enabled bool) error {
 	}
 	c.QuotaBlockEnabled[id] = enabled
 	_, err := db.Exec("UPDATE providers SET quota_block_enabled = ? WHERE id = ?", boolToInt(enabled), id)
+	return err
+}
+
+// SetProviderQuotaBlockThreshold 更新某个 provider 的拦截阈值（1..100）。
+//   - 同步更新内存中的 c.Providers[i].QuotaBlockThreshold（O(1)）；
+//   - 同步写入 DB 的 quota_block_threshold 列，重启后由 Load() 重建。
+// 校验由 web 层 handler 负责（1 ≤ threshold ≤ 100），setter 仅做透传。
+func (c *Config) SetProviderQuotaBlockThreshold(id string, threshold int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Providers {
+		if c.Providers[i].ID == id {
+			c.Providers[i].QuotaBlockThreshold = threshold
+			break
+		}
+	}
+	_, err := db.Exec("UPDATE providers SET quota_block_threshold = ? WHERE id = ?", threshold, id)
 	return err
 }
 

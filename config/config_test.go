@@ -146,7 +146,8 @@ CREATE TABLE IF NOT EXISTS providers (
 	created_at TEXT,
 	order_num INTEGER,
 	is_openai_format INTEGER DEFAULT 0,
-	quota_block_enabled INTEGER DEFAULT 0
+	quota_block_enabled INTEGER DEFAULT 0,
+	quota_block_threshold INTEGER DEFAULT 99
 );
 CREATE TABLE IF NOT EXISTS server_keys (
 	id TEXT PRIMARY KEY,
@@ -773,6 +774,84 @@ func TestSetProviderQuotaBlockEnabled_OffRoundTrips(t *testing.T) {
 	}
 	if cfg2.QuotaBlockEnabled[p.ID] {
 		t.Errorf("expected QuotaBlockEnabled[%q]=false after toggling off, got true", p.ID)
+	}
+}
+
+// TestSetProviderQuotaBlockThreshold_Persists 守护 quota_block_threshold 列：
+// SetProviderQuotaBlockThreshold 后，内存 Provider 字段必须更新；
+// 重新 Load 一份 Config 后，Provider 字段必须保留（round-trip 通过 DB）。
+func TestSetProviderQuotaBlockThreshold_Persists(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := Provider{
+		ID: "test-threshold-1", Name: "T1",
+		BaseURL: "https://api.minimaxi.com", APIKey: "sk-test",
+		Model: "general", IsActive: true,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Order:     1,
+	}
+	if err := cfg.AddProvider(p); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	if err := cfg.SetProviderQuotaBlockThreshold(p.ID, 85); err != nil {
+		t.Fatalf("SetProviderQuotaBlockThreshold: %v", err)
+	}
+	got := cfg.GetProviderByID(p.ID)
+	if got == nil || got.QuotaBlockThreshold != 85 {
+		t.Fatalf("in-memory QuotaBlockThreshold=%d, want 85", got.QuotaBlockThreshold)
+	}
+
+	// 重新 Load 模拟重启/重读：必须从 DB 重建字段
+	cfg2 := &Config{}
+	if err := cfg2.Load(); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	got2 := cfg2.GetProviderByID(p.ID)
+	if got2 == nil || got2.QuotaBlockThreshold != 85 {
+		t.Errorf("quota_block_threshold did not round-trip through DB: got=%d, want 85", got2.QuotaBlockThreshold)
+	}
+}
+
+// TestAddProvider_DefaultsThresholdTo99 守护存量兼容：新建 provider 时若
+// QuotaBlockThreshold=0（未显式设值），DB DEFAULT 99 必须生效；Load 后字段 = 99。
+func TestAddProvider_DefaultsThresholdTo99(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := &Config{}
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := Provider{
+		ID: "test-default-thresh", Name: "D",
+		BaseURL: "https://api.minimaxi.com", APIKey: "sk-test",
+		Model: "general", IsActive: true,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Order:     1,
+		// QuotaBlockThreshold 故意不设，保持 0
+	}
+	if err := cfg.AddProvider(p); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	cfg2 := &Config{}
+	if err := cfg2.Load(); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	got := cfg2.GetProviderByID(p.ID)
+	if got == nil {
+		t.Fatalf("provider not found after Load")
+	}
+	if got.QuotaBlockThreshold != 99 {
+		t.Errorf("expected default threshold 99, got %d", got.QuotaBlockThreshold)
 	}
 }
 
