@@ -2333,23 +2333,36 @@
         //   Computed at open time from p.quota_enabled && p.quota_interval.enabled.
         let usageChartState = null;
 
-        function showQuotaChartModal(pid, window) {
+        function showUsageStatsModal(pid, opts = {}) {
             const p = providers.find(x => x.id === pid);
             if (!p) return;
-            const winLabel = window === 'interval' ? '5h 限额' : '周限额';
-            document.getElementById('quotaChartTitle').textContent = `${winLabel}趋势 - ${p.name}`;
+
+            // 标题固定为「用量统计 - {name}」,通用语义,不再追加 5h/周限额字样。
+            document.getElementById('quotaChartTitle').textContent = `用量统计 - ${p.name}`;
 
             const modal = document.getElementById('quotaChartModal');
             modal.classList.add('show');
 
-            if (usageChartState && usageChartState.pid === pid && usageChartState.window === window) {
-                // already showing — refresh with current range
-                loadQuotaChart(usageChartState.range);
+            // 计算 hasQuota:有 quota_enabled 且 interval 窗口 enabled 才算"有使用率数据可画"。
+            // 这是运行时信号,不在前端硬编码"该 provider 是否 MiniMax"。
+            const hasQuota = !!(p.quota_enabled
+                            && p.quota_interval
+                            && p.quota_interval.enabled);
+
+            const initialWindow = opts.window || 'interval';
+
+            // 如果已经是同一个 provider 的同一 window,只刷新当前 range(避免重建 echarts)。
+            if (usageChartState
+                && usageChartState.pid === pid
+                && usageChartState.window === initialWindow) {
+                loadUsageChart(usageChartState.range);
                 return;
             }
+
+            // 切换 provider / window:dispose 旧 chart 并解绑旧 observer。
             if (usageChartState) {
-                usageChartState.chart.dispose();
                 if (usageChartState.resizeObserver) usageChartState.resizeObserver.disconnect();
+                usageChartState.chart.dispose();
             }
 
             const chartEl = document.getElementById('quotaChart');
@@ -2362,7 +2375,15 @@
                 }
             });
             resizeObserver.observe(chartEl);
-            usageChartState = { chart, pid, window, range: '5h', reqSeq: 0, resizeObserver };
+            usageChartState = {
+                chart,
+                pid,
+                window: initialWindow,
+                range: '5h',
+                reqSeq: 0,
+                hasQuota,
+                resizeObserver,
+            };
 
             // range toggle
             const toggle = document.getElementById('quotaRangeToggle');
@@ -2371,11 +2392,16 @@
                     toggle.querySelectorAll('button').forEach(x => x.classList.remove('active'));
                     b.classList.add('active');
                     usageChartState.range = b.dataset.range;
-                    loadQuotaChart(b.dataset.range);
+                    loadUsageChart(b.dataset.range);
                 };
             });
 
-            loadQuotaChart('5h');
+            loadUsageChart('5h');
+        }
+
+        // 保留旧名作为薄包装,让 quota-bar-row 的 click 委托继续可用。
+        function showQuotaChartModal(pid, window) {
+            showUsageStatsModal(pid, { window });
         }
 
         function hideQuotaChartModal() {
@@ -2387,7 +2413,7 @@
             }
         }
 
-        async function loadQuotaChart(range) {
+        async function loadUsageChart(range) {
             if (!usageChartState) return;
             const { chart, pid, window, reqSeq } = usageChartState;
             const mySeq = usageChartState.reqSeq = reqSeq + 1;
@@ -2523,7 +2549,7 @@
         applyQuotaUpdate = function(quotas) {
             _origApplyQuotaUpdate(quotas);
             if (usageChartState && quotas[usageChartState.pid]) {
-                loadQuotaChart(usageChartState.range);
+                loadUsageChart(usageChartState.range);
             }
         };
     </script>
