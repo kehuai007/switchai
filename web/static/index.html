@@ -2415,30 +2415,54 @@
 
         async function loadUsageChart(range) {
             if (!usageChartState) return;
-            const { chart, pid, window, reqSeq } = usageChartState;
+            const { chart, pid, window, hasQuota, reqSeq } = usageChartState;
             const mySeq = usageChartState.reqSeq = reqSeq + 1;
-            try {
-                const [quotaRes, tokenRes] = await Promise.all([
-                    fetch(`/api/providers/${pid}/quota-history?window=${window}&range=${range}`),
-                    fetch(`/api/providers/${pid}/token-history?range=${range}`),
-                ]);
-                if (mySeq !== usageChartState.reqSeq) return;
-                if (!quotaRes.ok || !tokenRes.ok) throw new Error(`HTTP ${quotaRes.status}/${tokenRes.status}`);
 
-                const quotaData = await quotaRes.json();
-                const tokenData = await tokenRes.json();
+            // 始终拉 token-history;仅当 hasQuota 才拉 quota-history。
+            // 两条请求互不依赖,并行。
+            const tokenP = fetch(`/api/providers/${pid}/token-history?range=${range}`).then(r => {
+                if (!r.ok) throw new Error(`token-history HTTP ${r.status}`);
+                return r.json();
+            });
+            const quotaP = hasQuota
+                ? fetch(`/api/providers/${pid}/quota-history?window=${window}&range=${range}`)
+                    .then(r => {
+                        if (!r.ok) throw new Error(`quota-history HTTP ${r.status}`);
+                        return r.json();
+                    })
+                : Promise.resolve({ points: [], current: {} });
+
+            try {
+                const [tokenData, quotaData] = await Promise.all([tokenP, quotaP]);
+                if (mySeq !== usageChartState.reqSeq) return; // 被新请求取代,丢弃
+
+                // 空数据:画布占位 + footer 提示
+                const tokenPts = tokenData.points || [];
+                const quotaPts = hasQuota ? (quotaData.points || []) : [];
+                if (!tokenPts.length && !quotaPts.length) {
+                    chart.setOption({
+                        title: { text: '暂无用量记录,请先使用一次', left: 'center', top: 'center',
+                                 textStyle: { color: '#999', fontSize: 14 } }
+                    }, true);
+                    document.getElementById('quotaChartCurrent').textContent = '暂无数据';
+                    document.getElementById('quotaChartReset').textContent = '';
+                    document.getElementById('quotaChartPerPercent').textContent = '';
+                    return;
+                }
 
                 const current = quotaData.current || {};
-                const currentPercent = current.used_percent;
-                const perPercent = computePerPercentTokens(quotaData.points, tokenData.points, currentPercent);
+                const currentPercent = hasQuota ? current.used_percent : null;
+                const perPercent = hasQuota
+                    ? computePerPercentTokens(quotaPts, tokenPts, currentPercent)
+                    : '';
 
-                chart.setOption(buildQuotaChartOption(quotaData, tokenData, range, currentPercent), true);
+                chart.setOption(buildUsageChartOption(quotaPts, tokenPts, range, currentPercent, hasQuota), true);
 
                 // footer
                 document.getElementById('quotaChartCurrent').textContent =
-                    currentPercent != null ? `当前: ${currentPercent.toFixed(1)}%` : '';
+                    hasQuota && currentPercent != null ? `当前: ${currentPercent.toFixed(1)}%` : '';
                 document.getElementById('quotaChartReset').textContent =
-                    current.reset_in_human ? `下次重置: ${current.reset_in_human}` : '';
+                    hasQuota && current.reset_in_human ? `下次重置: ${current.reset_in_human}` : '';
                 document.getElementById('quotaChartPerPercent').textContent = perPercent;
             } catch (err) {
                 if (mySeq !== usageChartState.reqSeq) return;
@@ -2449,53 +2473,77 @@
             }
         }
 
-        function buildQuotaChartOption(quotaData, tokenData, range, currentPercent) {
+        function buildUsageChartOption(quotaPoints, tokenPoints, range, currentPercent, hasQuota) {
             const xAxisRange = { '5h': 5*3600*1000, '1h': 3600*1000, '7d': 7*24*3600*1000 };
             const nowMs = Date.now();
             const startMs = nowMs - xAxisRange[range];
 
-            const qClass = quotaBarClass(quotaData.points.length ? quotaData.points[quotaData.points.length-1].used_percent : 0);
-            const colorMap = { cyan: '#22d3ee', orange: '#e67e22', redOrange: '#e67e22', red: '#c0392b' };
-            const quotaColor = colorMap[qClass] || '#22d3ee';
+            // 使用率系列的颜色来自最后一个 quota 点,与现状一致;无 quota 时用中性灰色。
+            let quotaColor = '#22d3ee'; // 默认 cyan
+            let markLines = [];
+            let leftAxis = null;
+            if (hasQuota) {
+                const lastPct = quotaPoints.length
+                    ? quotaPoints[quotaPoints.length - 1].used_percent
+                    : 0;
+                const qClass = quotaBarClass(lastPct);
+                const colorMap = { cyan: '#22d3ee', orange: '#e67e22', redOrange: '#e67e22', red: '#c0392b' };
+                quotaColor = colorMap[qClass] || '#22d3ee';
+                leftAxis = {
+                    type: 'value', name: '使用率 %', min: 0, max: 100, position: 'left',
+                    axisLabel: { formatter: '{value}%' }
+                };
+                if (currentPercent != null && currentPercent >= 0 && currentPercent <= 100) {
+                    markLines = [{
+                        yAxis: currentPercent,
+                        lineStyle: { color: quotaColor, type: 'dashed', width: 1.5 },
+                        label: { formatter: `当前 ${currentPercent.toFixed(1)}%`, position: 'insideEndTop', color: quotaColor, fontSize: 11 },
+                    }];
+                }
+            }
 
-            // 当前使用率水平虚线（左侧使用率轴上）
-            const markLines = (currentPercent != null && currentPercent >= 0 && currentPercent <= 100)
-                ? [{
-                    yAxis: currentPercent,
-                    lineStyle: { color: quotaColor, type: 'dashed', width: 1.5 },
-                    label: { formatter: `当前 ${currentPercent.toFixed(1)}%`, position: 'insideEndTop', color: quotaColor, fontSize: 11 },
-                }]
-                : [];
+            const yAxes = [
+                leftAxis,
+                { type: 'value', name: 'Token', position: 'right',
+                  axisLabel: { formatter: v => formatTokenCount(v) } },
+            ].filter(Boolean); // 没有 hasQuota 时不画左轴
+
+            // legend 只显示实际画的系列
+            const legendData = hasQuota
+                ? ['使用率', '输入', '输出', '总Token']
+                : ['输入', '输出', '总Token'];
+
+            const series = [
+                { name: '输入', type: 'line', yAxisIndex: hasQuota ? 1 : 0, smooth: true, connectNulls: true, showSymbol: false,
+                  itemStyle: { color: '#3b82f6' },
+                  data: tokenPoints.map(p => [p.t * 1000, p.input_tokens]) },
+                { name: '输出', type: 'line', yAxisIndex: hasQuota ? 1 : 0, smooth: true, connectNulls: true, showSymbol: false,
+                  itemStyle: { color: '#a855f7' },
+                  data: tokenPoints.map(p => [p.t * 1000, p.output_tokens]) },
+                { name: '总Token', type: 'line', yAxisIndex: hasQuota ? 1 : 0, smooth: true, connectNulls: true, showSymbol: false,
+                  lineStyle: { width: 3 },
+                  itemStyle: { color: '#111827' },
+                  data: tokenPoints.map(p => [p.t * 1000, p.total_tokens]) },
+            ];
+
+            if (hasQuota) {
+                series.unshift({
+                    name: '使用率', type: 'line', yAxisIndex: 0, smooth: true,
+                    connectNulls: true, showSymbol: false,
+                    itemStyle: { color: quotaColor },
+                    areaStyle: { color: quotaColor, opacity: 0.15 },
+                    markLine: { silent: true, symbol: 'none', data: markLines },
+                    data: quotaPoints.map(p => [p.t * 1000, p.used_percent]),
+                });
+            }
 
             return {
                 grid: { left: 60, right: 70, top: 40, bottom: 50 },
                 tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-                legend: { top: 4, data: ['使用率', '输入', '输出', '总Token'] },
+                legend: { top: 4, data: legendData },
                 xAxis: { type: 'time', min: startMs, max: nowMs },
-                yAxis: [
-                    { type: 'value', name: '使用率 %', min: 0, max: 100, position: 'left',
-                      axisLabel: { formatter: '{value}%' } },
-                    { type: 'value', name: 'Token', position: 'right',
-                      axisLabel: { formatter: v => formatTokenCount(v) } },
-                ],
-                series: [
-                    { name: '使用率', type: 'line', yAxisIndex: 0, smooth: true,
-                      connectNulls: true, showSymbol: false,
-                      itemStyle: { color: quotaColor },
-                      areaStyle: { color: quotaColor, opacity: 0.15 },
-                      markLine: { silent: true, symbol: 'none', data: markLines },
-                      data: quotaData.points.map(p => [p.t * 1000, p.used_percent]) },
-                    { name: '输入', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true, showSymbol: false,
-                      itemStyle: { color: '#3b82f6' },
-                      data: tokenData.points.map(p => [p.t * 1000, p.input_tokens]) },
-                    { name: '输出', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true, showSymbol: false,
-                      itemStyle: { color: '#a855f7' },
-                      data: tokenData.points.map(p => [p.t * 1000, p.output_tokens]) },
-                    { name: '总Token', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true, showSymbol: false,
-                      lineStyle: { width: 3 },
-                      itemStyle: { color: '#111827' },
-                      data: tokenData.points.map(p => [p.t * 1000, p.total_tokens]) },
-                ],
+                yAxis: yAxes,
+                series,
             };
         }
 
