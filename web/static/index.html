@@ -251,6 +251,27 @@
         .quota-bar-row[data-pid] { cursor: pointer; transition: background 150ms; padding: 2px 4px; border-radius: 4px; }
         .quota-bar-row[data-pid]:hover { background: #f7fafc; }
 
+        .usage-stats-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 12px;
+            margin-top: 6px;
+            font-size: 12px;
+            color: #667eea;
+            background: #f7fafc;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 150ms;
+            align-self: flex-start;
+        }
+        .usage-stats-btn:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
         .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
         .modal-header h3 { margin: 0; font-size: 16px; color: #2d3748; }
         .modal-close { background: none; border: none; font-size: 24px; line-height: 1; cursor: pointer; color: #999; padding: 0 4px; }
@@ -1708,6 +1729,11 @@
                                 限额拦截
                             </label>
                         </div>
+                        <button type="button" class="usage-stats-btn"
+                                data-pid="${p.id}" title="用量统计"
+                                onclick="showUsageStatsModal('${p.id}')">
+                            📊 用量统计
+                        </button>
                     </div>
                     <div class="provider-item-actions">
                         <button class="btn-primary" onclick="toggleProviderActive('${p.id}')">${p.is_active ? '取消激活' : '激活'}</button>
