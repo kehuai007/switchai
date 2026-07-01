@@ -62,7 +62,7 @@ func TestIsBlocked_ToggleOff_NotBlocked(t *testing.T) {
 	}
 	blockEnabled["t1"] = false
 	stateMu.Unlock()
-	blocked, _ := IsBlocked("t1")
+	blocked, _ := IsBlocked("t1", 99.0)
 	if blocked {
 		t.Error("toggle off should never block")
 	}
@@ -78,7 +78,7 @@ func TestIsBlocked_ToggleOn_TripsInterval(t *testing.T) {
 	}
 	blockEnabled["t2"] = true
 	stateMu.Unlock()
-	blocked, info := IsBlocked("t2")
+	blocked, info := IsBlocked("t2", 99.0)
 	if !blocked || info.Window != "interval" {
 		t.Errorf("expected interval block, got %+v", info)
 	}
@@ -94,7 +94,7 @@ func TestIsBlocked_ToggleOn_TripsWeekly(t *testing.T) {
 	}
 	blockEnabled["t3"] = true
 	stateMu.Unlock()
-	blocked, info := IsBlocked("t3")
+	blocked, info := IsBlocked("t3", 99.0)
 	if !blocked || info.Window != "weekly" {
 		t.Errorf("expected weekly block, got %+v", info)
 	}
@@ -109,7 +109,7 @@ func TestIsBlocked_AutoUnblockOnEndTime(t *testing.T) {
 	}
 	blockEnabled["t4"] = true
 	stateMu.Unlock()
-	blocked, _ := IsBlocked("t4")
+	blocked, _ := IsBlocked("t4", 99.0)
 	if blocked {
 		t.Error("should auto-unblock when end_time passed")
 	}
@@ -124,7 +124,7 @@ func TestIsBlocked_BothUnderThreshold(t *testing.T) {
 	}
 	blockEnabled["t5"] = true
 	stateMu.Unlock()
-	blocked, _ := IsBlocked("t5")
+	blocked, _ := IsBlocked("t5", 99.0)
 	if blocked {
 		t.Error("should not block when both under 99")
 	}
@@ -142,5 +142,64 @@ func TestSnapshot_ReturnsShallowCopy(t *testing.T) {
 	view["t6"].Interval.UsedPercent = 999
 	if getSnapshot("t6").Interval.UsedPercent == 999 {
 		t.Error("snapshot should be read-only")
+	}
+}
+
+// TestIsBlocked_ThresholdParam 守护 IsBlocked 新签名：threshold 由调用方传入。
+// 同一 snapshot 下，不同 threshold 给出不同拦截结果。
+func TestIsBlocked_ThresholdParam(t *testing.T) {
+	now := time.Now().Add(time.Hour)
+	stateMu.Lock()
+	snapshots["th1"] = &Snapshot{
+		ProviderID: "th1",
+		Interval:   IntervalWindow{Enabled: true, UsedPercent: 92.0, EndTime: now},
+		Weekly:     IntervalWindow{Enabled: true, UsedPercent: 60.0, EndTime: now},
+	}
+	blockEnabled["th1"] = true
+	stateMu.Unlock()
+
+	cases := []struct {
+		name      string
+		threshold float64
+		wantBlock bool
+		wantWin   string
+	}{
+		{"below snapshot", 90.0, true, "interval"},  // 92 >= 90 → block
+		{"equal snapshot", 92.0, true, "interval"},  // 92 >= 92 → block (>= semantics)
+		{"above snapshot", 95.0, false, ""},         // 92 < 95 → no block
+		{"boundary 100", 100.0, false, ""},          // 92 < 100 → no block
+		{"boundary 1", 1.0, true, "interval"},       // 92 >= 1 → block
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocked, info := IsBlocked("th1", tc.threshold)
+			if blocked != tc.wantBlock {
+				t.Errorf("threshold=%v: blocked=%v, want %v", tc.threshold, blocked, tc.wantBlock)
+			}
+			if tc.wantBlock && info.Window != tc.wantWin {
+				t.Errorf("threshold=%v: info.Window=%q, want %q", tc.threshold, info.Window, tc.wantWin)
+			}
+		})
+	}
+}
+
+// TestIsBlocked_CheckOrder_IntervalBeforeWeekly 守护 5h 必须先于 weekly 检查：
+// 当两个窗口都 >= threshold 时，BlockInfo.Window 必须是 "interval"。
+func TestIsBlocked_CheckOrder_IntervalBeforeWeekly(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	stateMu.Lock()
+	snapshots["order1"] = &Snapshot{
+		ProviderID: "order1",
+		Interval:   IntervalWindow{Enabled: true, UsedPercent: 95.0, EndTime: future},
+		Weekly:     IntervalWindow{Enabled: true, UsedPercent: 95.0, EndTime: future},
+	}
+	blockEnabled["order1"] = true
+	stateMu.Unlock()
+	blocked, info := IsBlocked("order1", 90.0)
+	if !blocked {
+		t.Fatal("expected block")
+	}
+	if info.Window != "interval" {
+		t.Errorf("expected interval to win (5h checked first), got %q", info.Window)
 	}
 }
