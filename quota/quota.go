@@ -51,7 +51,6 @@ type BlockInfo struct {
 const (
 	pollInterval   = 10 * time.Second
 	requestTimeout = 5 * time.Second
-	blockThreshold = 99.0
 	upstreamHost   = "https://api.minimaxi.com"
 	upstreamPath   = "/v1/token_plan/remains"
 	generalModel   = "general"
@@ -73,17 +72,25 @@ func isQuotaHost(raw string) bool {
 
 // Package-level state. guarded by stateMu.
 var (
-	stateMu      sync.RWMutex
-	snapshots    = map[string]*Snapshot{} // providerID -> latest
-	blockEnabled = map[string]bool{}      // providerID -> toggle
-	upstreamHTTP *http.Client             // initialized in Init()
+	stateMu         sync.RWMutex
+	snapshots       = map[string]*Snapshot{}    // providerID -> latest
+	blockEnabled    = map[string]bool{}         // providerID -> toggle
+	blockThresholds = map[string]float64{}      // providerID -> threshold mirror (authoritative value lives on config.Provider)
+	upstreamHTTP    *http.Client                // initialized in Init()
 )
 
 // IsBlocked returns whether the provider's quota should block upstream
 // requests. Blocking requires (a) the user toggled enforcement ON for
-// this provider, and (b) at least one window's UsedPercent is >= 99.
+// this provider, and (b) at least one window's UsedPercent is >= threshold.
 // If a window's EndTime has passed, that window is ignored (lazy reset).
-func IsBlocked(providerID string) (bool, BlockInfo) {
+//
+// Check order is fixed: interval (5h) first, then weekly. Any window that
+// trips the threshold blocks; the first one to trip wins (typically 5h).
+//
+// threshold is supplied by the caller (proxy.go reads it from
+// config.Provider.QuotaBlockThreshold). The package-level blockThresholds
+// map is only used by legacy callers/tests that don't hold a Provider.
+func IsBlocked(providerID string, threshold float64) (bool, BlockInfo) {
 	stateMu.RLock()
 	snap := snapshots[providerID]
 	enabled := blockEnabled[providerID]
@@ -98,7 +105,7 @@ func IsBlocked(providerID string) (bool, BlockInfo) {
 		name string
 		w    IntervalWindow
 	}{
-		{"interval", snap.Interval},
+		{"interval", snap.Interval}, // 5h first — see spec §3 "检查顺序"
 		{"weekly", snap.Weekly},
 	}
 	for _, x := range wins {
@@ -108,7 +115,7 @@ func IsBlocked(providerID string) (bool, BlockInfo) {
 		if !x.w.EndTime.IsZero() && now.After(x.w.EndTime) {
 			continue
 		}
-		if x.w.UsedPercent >= blockThreshold {
+		if x.w.UsedPercent >= threshold {
 			return true, BlockInfo{
 				Window:       x.name,
 				UsedPercent:  x.w.UsedPercent,
@@ -162,6 +169,17 @@ func SetBlockEnabled(providerID string, enabled bool) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	blockEnabled[providerID] = enabled
+}
+
+// SetBlockThreshold updates the in-memory threshold mirror for callers that
+// don't have a Provider struct in hand. The authoritative value lives on
+// config.Provider.QuotaBlockThreshold and is what proxy.go passes to
+// IsBlocked. This setter exists for symmetry with SetBlockEnabled and to
+// let tests construct quota package state without a Provider.
+func SetBlockThreshold(providerID string, threshold float64) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	blockThresholds[providerID] = threshold
 }
 
 // BlockEnabledFlags returns the current enforcement flags for all known
