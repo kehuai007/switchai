@@ -308,7 +308,7 @@ func (c *Config) Load() error {
 	}
 
 	// 加载 providers
-	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num, COALESCE(is_openai_format, 0), COALESCE(quota_block_enabled, 0) FROM providers ORDER BY order_num")
+	rows, err := db.Query("SELECT id, name, base_url, api_key, model, is_active, created_at, order_num, COALESCE(is_openai_format, 0), COALESCE(quota_block_enabled, 0), COALESCE(quota_block_threshold, 99) FROM providers ORDER BY order_num")
 	if err != nil {
 		return err
 	}
@@ -321,11 +321,13 @@ func (c *Config) Load() error {
 		var isActive int
 		var isOpenAIFormat int
 		var quotaBlock int
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order, &isOpenAIFormat, &quotaBlock); err != nil {
+		var quotaThreshold int
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.Model, &isActive, &p.CreatedAt, &p.Order, &isOpenAIFormat, &quotaBlock, &quotaThreshold); err != nil {
 			return err
 		}
 		p.IsActive = isActive == 1
 		p.IsOpenAIFormat = isOpenAIFormat == 1
+		p.QuotaBlockThreshold = quotaThreshold
 		c.QuotaBlockEnabled[p.ID] = quotaBlock == 1
 		c.Providers = append(c.Providers, p)
 	}
