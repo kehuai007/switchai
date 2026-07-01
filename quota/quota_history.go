@@ -389,6 +389,40 @@ func recordTokenBucketForTest(db *sql.DB, providerID string, tBucket int64, in, 
 	}
 }
 
+// SetStatsDBForTest injects a pre-built stats.db handle into the quota
+// package so QueryTokenHistory reads from a caller-supplied database
+// instead of opening stats.db from the data directory. While injected,
+// initStatsDB is suppressed (so the caller controls the only open handle
+// for the temp file). Returns a cleanup function that restores the
+// previous state. Intended for cross-package tests (e.g. the stats
+// package's bridge integration test) that need stats.RecordUsage and
+// quota.QueryTokenHistory to operate against the same *sql.DB.
+func SetStatsDBForTest(db *sql.DB) (cleanup func()) {
+	// Note: we swap the package globals (statsDB, statsDBInjected,
+	// statsOnce) and return a closure that restores them. The stats
+	// package's Stats type embeds sync.RWMutex which is a noCopy type,
+	// but statsOnce is sync.Once which is also noCopy — so we cannot
+	// store it in a captured local variable. Instead we use
+	// sync.Once's zero-value swap and remember the prior injected
+	// flag (a plain bool) to restore on cleanup.
+	statsMu.Lock()
+	prevDB := statsDB
+	prevInjected := statsDBInjected
+	statsDB = db
+	statsDBInjected = true
+	// Reset the once under the lock so a concurrent caller does not
+	// observe a partially-swapped state.
+	statsOnce = sync.Once{}
+	statsMu.Unlock()
+	return func() {
+		statsMu.Lock()
+		statsDB = prevDB
+		statsDBInjected = prevInjected
+		statsOnce = sync.Once{}
+		statsMu.Unlock()
+	}
+}
+
 func countQuotaHistoryForTest(providerID string, tBucket int64) int {
 	historyMu.Lock()
 	defer historyMu.Unlock()
