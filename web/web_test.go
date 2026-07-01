@@ -187,3 +187,49 @@ func TestGetTokenHistory_HappyPath(t *testing.T) {
 		t.Errorf("points should be [], got null")
 	}
 }
+
+// TestGetTokenHistory_Accepts24h 守护：validRanges 白名单 + rangeToSeconds 必须
+// 接受 "24h"（用量统计 modal 的默认档位），否则 400 拦截会让 modal 默认态空。
+func TestGetTokenHistory_Accepts24h(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("SWITCHAI_DATA_DIR", tmpDir)
+	statsPath := filepath.Join(tmpDir, "stats.db")
+	sdb, err := sql.Open("sqlite", statsPath)
+	if err != nil {
+		t.Fatalf("open stats.db: %v", err)
+	}
+	if _, err := sdb.Exec(`CREATE TABLE IF NOT EXISTS provider_token_history (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id   TEXT    NOT NULL,
+		t_bucket      INTEGER NOT NULL,
+		input_tokens  INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens  INTEGER NOT NULL DEFAULT 0,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(provider_id, t_bucket)
+	);`); err != nil {
+		t.Fatalf("init stats schema: %v", err)
+	}
+	_ = sdb.Close()
+	r := newTestRouter()
+	req := httptest.NewRequest("GET", "/api/providers/p-24h/token-history?range=24h", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for range=24h, got %d, body=%s", w.Code, w.Body.String())
+	}
+	defer quota.ShutdownHistory()
+	var resp struct {
+		Range  string                   `json:"range"`
+		Points []map[string]interface{} `json:"points"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.Range != "24h" {
+		t.Errorf("bad echo: range=%q", resp.Range)
+	}
+	if resp.Points == nil {
+		t.Errorf("points should be [], got null")
+	}
+}

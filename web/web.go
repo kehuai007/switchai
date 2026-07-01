@@ -36,7 +36,7 @@ var validWindows = map[string]bool{"interval": true, "weekly": true}
 
 // validRanges is the whitelist of accepted `range` query values for
 // /providers/:id/quota-history and /providers/:id/token-history.
-var validRanges = map[string]bool{"5h": true, "1h": true, "7d": true}
+var validRanges = map[string]bool{"5h": true, "1h": true, "7d": true, "24h": true}
 
 // rangeToSeconds converts a whitelisted range string to a duration in
 // seconds. Callers MUST validate against validRanges first; unmapped
@@ -49,6 +49,8 @@ func rangeToSeconds(r string) int64 {
 		return 3600
 	case "7d":
 		return 7 * 24 * 3600
+	case "24h":
+		return 24 * 3600
 	}
 	return 0
 }
@@ -674,7 +676,7 @@ func getQuotaHistory(c *gin.Context) {
 	window := c.Query("window")
 	rng := c.Query("range")
 	if !validWindows[window] || !validRanges[rng] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "window 必须为 interval/weekly，range 必须为 5h/1h/7d"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "window 必须为 interval/weekly，range 必须为 1h/5h/7d/24h"})
 		return
 	}
 	secs := rangeToSeconds(rng)
@@ -712,7 +714,7 @@ func getTokenHistory(c *gin.Context) {
 	pid := c.Param("id")
 	rng := c.Query("range")
 	if !validRanges[rng] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "range 必须为 5h/1h/7d"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "range 必须为 1h/5h/7d/24h"})
 		return
 	}
 	secs := rangeToSeconds(rng)
