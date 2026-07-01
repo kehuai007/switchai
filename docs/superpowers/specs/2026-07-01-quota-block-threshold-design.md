@@ -7,6 +7,8 @@
 
 当前「限额拦截」开关启用后，[quota.IsBlocked](quota/quota.go#L82-L121) 以硬编码常量 `blockThreshold = 99.0`（见 [quota/quota.go:54](quota/quota.go#L54)）作为拦截线。这意味着用户只能选择「拦 / 不拦」，不能在 5h 或周限额快用完时提前拉一道更保守的线（如 90%、80%），也无法在不拦 / 全拦之间做精细控制——尤其在配额窗口末期，几分钟的延迟可能就足以打穿限额。
 
+**关键不变量**：放行的请求会被正常转发并产生计费（输入/输出 token 都会被上游计入）。因此拦截阈值的设计意图是 **"提前切走以避免继续计费"**，而不是"等到满了才挡"。99% 的硬编码几乎等于"用尽才拦"，对保护预算不友好；本设计把阈值开放给用户调小，用更保守的线提前切走流量。
+
 本设计为每个 provider 增加一个 1–100 的整数百分比阈值（默认 99，沿用现有行为），用户可实时下拉选择，写入后端并立即影响后续转发判断。
 
 ## 2. 目标 / 非目标
@@ -46,7 +48,24 @@ fetch PUT /api/providers/:id/quota-block-threshold  {threshold: 95}
 [proxy/proxy.go]   quota.IsBlocked(provider.ID, provider.QuotaBlockThreshold)
                                                                  │
                                                                  ▼
-[quota/quota.go]   if x.w.UsedPercent >= threshold → 403
+[quota/quota.go]   检查 5h 限额 → 检查周限额
+                    任一窗口 UsedPercent >= threshold → 403
+                    否则放行 → 正常转发 → stats 计数（推动下一次轮询的 UsedPercent 上涨）
+```
+
+**实时拦截链路**：
+- `quota` 包每 10s 调一次 `/v1/token_plan/remains` 拿到当前 `UsedPercent`，写入内存快照（snapshot）
+- 每次客户端请求到达 `proxy.go` 时，**实时**调 `IsBlocked` 读最新快照判断
+- `IsBlocked` 只读不写——拦截是请求维度而非轮询维度
+- 放行的请求被正常转发，`stats` 包会计数（input/output/total token），进而推动上游 `/v1/token_plan/remains` 的 UsedPercent 上涨
+- 重置时间到达时，上游会把窗口的 `UsedPercent` 重置到 0（5h 或周），下一轮轮询拉到新值，`IsBlocked` 自动放行
+
+### 检查顺序（重要）
+
+`IsBlocked` 必须按 **5h → 周** 顺序检查（先 interval 后 weekly）：
+- 任一窗口达到阈值就拦截，`BlockInfo.Window` 字段记录"是哪个窗口触发的拦截"
+- 5h 通常先到顶、用户更关心 5h 提示，5h 优先返回更符合心智
+- 当前代码遍历顺序 `{"interval", ...}, {"weekly", ...}` 已经正确，本设计仅约束"未来改动不得调换顺序"
 ```
 
 ### 持久化模型
@@ -322,7 +341,7 @@ document.addEventListener('change', (e) => {
 - [ ] 改 select 到 95 → PUT 200 → DB 写入 95 → 内存 Provider.QuotaBlockThreshold == 95
 - [ ] 阈值 95 + toggle ON + interval 96% → 403 拦截
 - [ ] 阈值 95 + toggle ON + interval 94% → 不拦截
-- [ ] 阈值边界 1 / 100：1 时几乎必然拦截（任意使用），100 时永不拦截（除非超 100，但 UsedPercent 已 clamp）
+- [ ] 阈值边界 1 / 100：1 时"只要有任何使用就拦"，100 时"UsedPercent 必须 ≥ 100 才拦"（实际场景几乎总触发，因 UsedPercent clamp 在 100）
 - [ ] Web handler 拒绝 threshold < 1 或 > 100，返回 400
 - [ ] 重启服务后阈值保留
 
@@ -358,4 +377,6 @@ document.addEventListener('change', (e) => {
 - 代价：几乎为 0。
 
 **决策 5：阈值 100 的语义**
-- 100 = "UsedPercent >= 100 才拦"。`quota` 包的 `UsedPercent` 来自上游 `/v1/token_plan/remains` 的 `remains_percent`，可能被 clamp 在 0–100。100 在实际场景几乎永远不触发，但合法；保留。
+- 100 = "UsedPercent >= 100 即拦"。`UsedPercent` 上限通常由上游 clamp 在 100，所以 100 在实际场景"几乎总触发"，但语义上仍合法。
+- 注意：阈值不是"达到 100 才拦"——恰恰相反，达到阈值即拦；放行会继续产生计费请求。100 表示"只要有任何使用就拦"，是最保守的档位。
+- 保留 100 是为了"我有富余配额额度，但希望完全不消耗"这种边界场景；多数用户应该选 90/95/99。
