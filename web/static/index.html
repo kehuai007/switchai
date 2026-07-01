@@ -1604,8 +1604,12 @@
             const sel = e.target.closest('.quota-block-threshold');
             if (sel) {
                 const pid = sel.getAttribute('data-pid');
+                const previous = sel.defaultValue; // 捕获 PUT 之前的"权威"值（即上一次服务器渲染的值）
                 const threshold = parseInt(sel.value, 10);
-                if (Number.isNaN(threshold) || threshold < 1 || threshold > 100) return; // sanity guard
+                if (Number.isNaN(threshold) || threshold < 1 || threshold > 100) {
+                    sel.value = previous; // 还原非法选择
+                    return;
+                }
                 sel.disabled = true;
                 fetch(`/api/providers/${pid}/quota-block-threshold`, {
                     method: 'PUT',
@@ -1615,6 +1619,7 @@
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                 }).catch(err => {
                     alert('设置失败: ' + err.message);
+                    sel.value = previous; // PUT 失败：回滚 UI 与服务器一致
                 }).finally(() => { sel.disabled = false; });
                 return;
             }
