@@ -442,11 +442,18 @@ func handleWebSocket(c *gin.Context) {
 	stats.GetStats().AddClient(conn)
 	log.Println("New WebSocket client connected")
 
-	// 发送当前统计数据
-	summary := stats.GetStats().GetSummary()
-	if err := conn.WriteJSON(summary); err != nil {
-		log.Printf("Error sending initial stats: %v", err)
-	}
+	// Keepalive: without a read deadline a half-open (silently dropped)
+	// connection is never detected, so a page left open overnight stops
+	// receiving quota pushes without ever reconnecting. The server pings
+	// every pingInterval; each pong extends the deadline.
+	const pongWait = 70 * time.Second
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	// 发送当前统计数据（经 writeMu 串行化，避免与定时推送并发写同一连接）
+	stats.GetStats().SendInitialSummary(conn)
 
 	// 保持连接，等待客户端断开
 	defer stats.GetStats().RemoveClient(conn)

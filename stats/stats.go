@@ -78,10 +78,25 @@ var (
 )
 
 type Stats struct {
-	mu       sync.RWMutex
-	clients  map[*websocket.Conn]bool
+	mu        sync.RWMutex
+	clients   map[*websocket.Conn]bool
 	broadcast chan UsageRecord
+	// writeMu serializes ALL writes to client connections. gorilla/websocket
+	// forbids concurrent writers on a single conn; the initial summary send,
+	// the periodic quota push, and ping frames all funnel through here.
+	writeMu sync.Mutex
 }
+
+// pushInterval drives the periodic full-summary broadcast (includes the
+// latest provider_quotas). This is what refreshes quota cards on IDLE pages
+// — previously provider_quotas only rode along with RecordUsage broadcasts,
+// so an idle page never saw a quota reset. pingInterval drives WS keepalive
+// ping frames so long-idle (half-open) connections are detected and torn
+// down. Both are vars so tests can shrink them.
+var (
+	pushInterval = 10 * time.Second
+	pingInterval = 30 * time.Second
+)
 
 func Init() {
 	dataDir := appdata.GetDataDir()
@@ -315,24 +330,113 @@ func Shutdown() {
 }
 
 func (s *Stats) handleBroadcast() {
-	for record := range s.broadcast {
-		// 获取完整统计摘要广播给所有 stats WebSocket 客户端
-		summary := s.GetSummary()
-		s.mu.RLock()
-		for client := range s.clients {
-			err := client.WriteJSON(summary)
-			if err != nil {
-				logger.Error("WebSocket write error: %v", err)
-				client.Close()
-				delete(s.clients, client)
-			}
-		}
-		s.mu.RUnlock()
+	pushTicker := time.NewTicker(pushInterval)
+	defer pushTicker.Stop()
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
 
-		// 同时广播单条记录给 history WebSocket 客户端
-		history.BroadcastRecord(record.ProviderID, record.ProviderName, record.Model, record.UserModel,
-			record.InputTokens, record.OutputTokens, record.Cost, record.Duration,
-			record.Timestamp, "", "")
+	for {
+		select {
+		case record, ok := <-s.broadcast:
+			if !ok {
+				return
+			}
+			// 有新 usage：广播完整摘要（含最新 provider_quotas）。
+			s.writeToAllClients(s.GetSummary())
+			// 同时广播单条记录给 history WebSocket 客户端
+			history.BroadcastRecord(record.ProviderID, record.ProviderName, record.Model, record.UserModel,
+				record.InputTokens, record.OutputTokens, record.Cost, record.Duration,
+				record.Timestamp, "", "")
+		case <-pushTicker.C:
+			// 空闲也定时推：额度重置等 quota 变化不再依赖 usage 事件。
+			// 无客户端时跳过昂贵的 GetSummary（DB 查询）。
+			if s.clientCount() == 0 {
+				continue
+			}
+			s.writeToAllClients(s.GetSummary())
+		case <-pingTicker.C:
+			s.pingAllClients()
+		}
+	}
+}
+
+// clientCount returns the number of connected stats WS clients.
+func (s *Stats) clientCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.clients)
+}
+
+// writeToAllClients sends payload to every connected client, serialized via
+// writeMu. Dead connections (write error) are closed and removed.
+func (s *Stats) writeToAllClients(payload interface{}) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	s.mu.RLock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	for client := range s.clients {
+		conns = append(conns, client)
+	}
+	s.mu.RUnlock()
+
+	var dead []*websocket.Conn
+	for _, client := range conns {
+		if err := client.WriteJSON(payload); err != nil {
+			logger.Error("WebSocket write error: %v", err)
+			client.Close()
+			dead = append(dead, client)
+		}
+	}
+	if len(dead) > 0 {
+		s.mu.Lock()
+		for _, c := range dead {
+			delete(s.clients, c)
+		}
+		s.mu.Unlock()
+	}
+}
+
+// pingAllClients sends a WS ping control frame to each client. A dead
+// (half-open) connection surfaces either here (write error) or via the
+// read-side deadline in handleWebSocket; both paths remove the client.
+func (s *Stats) pingAllClients() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	s.mu.RLock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	for client := range s.clients {
+		conns = append(conns, client)
+	}
+	s.mu.RUnlock()
+
+	deadline := time.Now().Add(pingInterval)
+	var dead []*websocket.Conn
+	for _, client := range conns {
+		if err := client.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+			client.Close()
+			dead = append(dead, client)
+		}
+	}
+	if len(dead) > 0 {
+		s.mu.Lock()
+		for _, c := range dead {
+			delete(s.clients, c)
+		}
+		s.mu.Unlock()
+	}
+}
+
+// SendInitialSummary writes the current full summary to a single freshly
+// connected client, serialized via writeMu so it cannot interleave with a
+// concurrent periodic push on the same connection.
+func (s *Stats) SendInitialSummary(conn *websocket.Conn) {
+	summary := s.GetSummary()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := conn.WriteJSON(summary); err != nil {
+		logger.Error("Error sending initial stats: %v", err)
 	}
 }
 

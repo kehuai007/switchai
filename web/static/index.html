@@ -1424,9 +1424,11 @@
             ws.onopen = () => {
                 console.log('WebSocket connected');
                 statsWsConnected = true;
+                lastWsMessageAt = Date.now();
             };
 
             ws.onmessage = (event) => {
+                lastWsMessageAt = Date.now();
                 const data = JSON.parse(event.data);
                 console.log('WebSocket message received:', data);
                 if (data.total_input_tokens !== undefined) {
@@ -1462,6 +1464,33 @@
                 setTimeout(connectWebSocket, 3000);
             };
         }
+
+        // 活性检测：服务端每 10s 必推一条摘要（含 provider_quotas），30s 一次 ping。
+        // 若超过 STALE_MS 没收到任何消息，判定连接假死（隔日/长空闲 half-open），
+        // 强制重连并立刻 loadProviders() 拉一次最新 quota 兜底。
+        let lastWsMessageAt = Date.now();
+        const WS_STALE_MS = 35000;
+        function forceWsReconnect(reason) {
+            console.warn('WS stale, forcing reconnect:', reason);
+            lastWsMessageAt = Date.now();
+            try { if (ws) ws.close(); } catch (e) {}
+            loadProviders();
+        }
+        setInterval(() => {
+            if (document.hidden) return; // 后台标签页节流，靠 visibilitychange 恢复时兜底
+            if (Date.now() - lastWsMessageAt > WS_STALE_MS) {
+                forceWsReconnect('no message for ' + WS_STALE_MS + 'ms');
+            }
+        }, 10000);
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) return;
+            // 页面重新可见：连接不健康则重连，并无条件刷新一次 provider 数据。
+            if (!ws || ws.readyState !== WebSocket.OPEN || Date.now() - lastWsMessageAt > WS_STALE_MS) {
+                forceWsReconnect('page visible');
+            } else {
+                loadProviders();
+            }
+        });
 
         async function loadProviders() {
             const res = await fetch('/api/providers');
