@@ -120,6 +120,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/providers/fetch-models", fetchModelsByCredentials)
 		api.POST("/providers/:id/fetch-models", fetchProviderModels)
 		api.PUT("/providers/:id/quota-block-enabled", setQuotaBlockEnabled)
+		api.PUT("/providers/:id/quota-block-threshold", setQuotaBlockThreshold)
 		api.GET("/providers/:id/quota-history", getQuotaHistory)
 		api.GET("/providers/:id/token-history", getTokenHistory)
 
@@ -636,6 +637,32 @@ func setQuotaBlockEnabled(c *gin.Context) {
 		return
 	}
 	quota.SetBlockEnabled(id, body.Enabled)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func setQuotaBlockThreshold(c *gin.Context) {
+	id := c.Param("id")
+	var body struct {
+		Threshold int `json:"threshold"`
+	}
+	if err := c.BindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Threshold < 1 || body.Threshold > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "threshold must be in 1..100"})
+		return
+	}
+	cfg := config.GetConfig()
+	if cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config not loaded"})
+		return
+	}
+	if err := cfg.SetProviderQuotaBlockThreshold(id, body.Threshold); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	quota.SetBlockThreshold(id, float64(body.Threshold))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
