@@ -410,8 +410,10 @@ func (c *Config) save() error {
 		if c.QuotaBlockEnabled[p.ID] {
 			quotaBlock = 1
 		}
-		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format, quota_block_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat, quotaBlock)
+		// QuotaBlockThreshold 由 DB DEFAULT 99 提供兜底；当 p.QuotaBlockThreshold==0
+		// （即调用方未显式设值，例如旧 Provider 调用栈或测试构造），依赖 DEFAULT 99。
+		_, err = db.Exec("INSERT INTO providers (id, name, base_url, api_key, model, is_active, created_at, order_num, is_openai_format, quota_block_enabled, quota_block_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			p.ID, p.Name, p.BaseURL, p.APIKey, p.Model, isActive, p.CreatedAt, p.Order, isOpenAIFormat, quotaBlock, p.QuotaBlockThreshold)
 		if err != nil {
 			return err
 		}
