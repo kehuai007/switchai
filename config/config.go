@@ -34,11 +34,12 @@ type Provider struct {
 	IsOpenAIFormat bool   `json:"is_openai_format"` // 标识是否为 OpenAI 格式的 API
 
 	// Quota — 由 quota 包在请求时填充，不持久化（QuotaBlockEnabled 除外，由 Config.QuotaBlockEnabled 单独持久化）。
-	QuotaEnabled      bool            `json:"quota_enabled,omitempty"`
-	QuotaError        string          `json:"quota_error,omitempty"`
-	QuotaInterval     QuotaWindowJSON `json:"quota_interval,omitempty"`
-	QuotaWeekly       QuotaWindowJSON `json:"quota_weekly,omitempty"`
-	QuotaBlockEnabled bool            `json:"quota_block_enabled"`
+	QuotaEnabled        bool            `json:"quota_enabled,omitempty"`
+	QuotaError          string          `json:"quota_error,omitempty"`
+	QuotaInterval       QuotaWindowJSON `json:"quota_interval,omitempty"`
+	QuotaWeekly         QuotaWindowJSON `json:"quota_weekly,omitempty"`
+	QuotaBlockEnabled   bool            `json:"quota_block_enabled"`
+	QuotaBlockThreshold int             `json:"quota_block_threshold"` // 1..100，默认 99
 }
 
 // QuotaWindowJSON 描述某一条额度窗口（5h 区间或 7d 本周）的展示字段。
