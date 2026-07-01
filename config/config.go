@@ -226,7 +226,8 @@ func initDB() error {
 		created_at TEXT,
 		order_num INTEGER,
 		is_openai_format INTEGER DEFAULT 0,
-		quota_block_enabled INTEGER DEFAULT 0
+		quota_block_enabled INTEGER DEFAULT 0,
+		quota_block_threshold INTEGER DEFAULT 99
 	);
 	CREATE TABLE IF NOT EXISTS server_keys (
 		id TEXT PRIMARY KEY,
@@ -262,6 +263,8 @@ func initDB() error {
 	db.Exec("ALTER TABLE providers ADD COLUMN is_openai_format INTEGER DEFAULT 0")
 	// 迁移：添加 quota_block_enabled 列（如果不存在）
 	db.Exec("ALTER TABLE providers ADD COLUMN quota_block_enabled INTEGER DEFAULT 0")
+	// 迁移：添加 quota_block_threshold 列（如果不存在）；默认 99 与现有硬编码行为一致
+	db.Exec("ALTER TABLE providers ADD COLUMN quota_block_threshold INTEGER DEFAULT 99")
 
 	return nil
 }
