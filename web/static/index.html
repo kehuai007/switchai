@@ -64,17 +64,19 @@
             white-space: nowrap;
             line-height: 1.4;
         }
-        .model-chip-more {
-            background: #cbd5e0;
-            padding: 1px 6px;
-            border-radius: 3px;
+        .model-chip-total {
             font-size: 11px;
-            color: #1a202c;
-            font-weight: 600;
+            color: #718096;
+            padding: 1px 4px;
             white-space: nowrap;
             line-height: 1.4;
+            font-weight: 500;
+            align-self: center;
         }
-        .model-line { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; flex-wrap: wrap; }
+        .model-line { display: grid; grid-template-columns: 1fr; align-items: center; gap: 3px; min-width: 0; max-width: 100%; }
+        .model-line > .model-chip { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+        .model-chip-last { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; overflow: hidden; }
+        .model-chip-last > .model-chip-total { flex: 0 0 auto; }
         .model-line-empty { color: #999; }
         .model-format-block { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; max-width: 100%; }
         .model-format-row { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: 13px; color: #333; }
@@ -1587,10 +1589,20 @@
                 return `<div class="model-line"><span class="model-line-empty">—</span></div>`;
             }
             const visible = models.slice(0, 2);
-            const more = models.length - visible.length;
+            const rest = models.length - visible.length;
             const chips = visible.map(m => `<span class="model-chip">${escapeHtml(m)}</span>`).join('');
-            const moreChip = more > 0 ? `<span class="model-chip-more">+${more}</span>` : '';
-            return `<div class="model-line model-chips" title="${models.length} 个模型，悬停展开">${chips}${moreChip}</div>`;
+            // 最后一个 chip + 总数标签 放在同一行（同一 flex 容器）：
+            // 这样 (N个) 永远紧贴最后一个模型名，不被父 grid 折到下一行。
+            if (rest > 0) {
+                return `<div class="model-line">
+                    <span class="model-chip">${escapeHtml(visible[0])}</span>
+                    <span class="model-chip model-chip-last">${escapeHtml(visible[1])}<span class="model-chip-total">(${rest}个)</span></span>
+                </div>`;
+            }
+            return `<div class="model-line">
+                <span class="model-chip">${escapeHtml(visible[0])}</span>
+                <span class="model-chip">${escapeHtml(visible[1])}</span>
+            </div>`;
         }
 
         // 合并「模型」与「格式」为一个区块，两行布局：
