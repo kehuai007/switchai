@@ -614,7 +614,7 @@
     <div class="modal" id="quotaChartModal">
         <div class="modal-content" style="max-width: 760px;">
             <div class="modal-header">
-                <h3 id="quotaChartTitle">限额趋势</h3>
+                <h3 id="quotaChartTitle">用量统计</h3>
                 <button class="modal-close" onclick="hideQuotaChartModal()">×</button>
             </div>
             <div class="bucket-toggle" id="quotaRangeToggle">
@@ -2326,8 +2326,12 @@
             };
         }
 
-        // --- Quota Chart Modal ---
-        let quotaChartState = null; // {chart, pid, window, range, reqSeq}
+        // --- Usage Stats Modal ---
+        // usageChartState = {chart, pid, window, range, reqSeq, hasQuota, resizeObserver}
+        // - hasQuota: when true, the modal additionally shows the 使用率 series,
+        //   the left % Y-axis, the current-percent markLine, and the 限额 footer.
+        //   Computed at open time from p.quota_enabled && p.quota_interval.enabled.
+        let usageChartState = null;
 
         function showQuotaChartModal(pid, window) {
             const p = providers.find(x => x.id === pid);
@@ -2338,14 +2342,14 @@
             const modal = document.getElementById('quotaChartModal');
             modal.classList.add('show');
 
-            if (quotaChartState && quotaChartState.pid === pid && quotaChartState.window === window) {
+            if (usageChartState && usageChartState.pid === pid && usageChartState.window === window) {
                 // already showing — refresh with current range
-                loadQuotaChart(quotaChartState.range);
+                loadQuotaChart(usageChartState.range);
                 return;
             }
-            if (quotaChartState) {
-                quotaChartState.chart.dispose();
-                if (quotaChartState.resizeObserver) quotaChartState.resizeObserver.disconnect();
+            if (usageChartState) {
+                usageChartState.chart.dispose();
+                if (usageChartState.resizeObserver) usageChartState.resizeObserver.disconnect();
             }
 
             const chartEl = document.getElementById('quotaChart');
@@ -2353,12 +2357,12 @@
             const chart = echarts.init(chartEl, null, { renderer: 'canvas' });
             // 把 observer 存到 state，hide 时 disconnect（避免对已 dispose 的 chart 调用 resize 抛错）
             const resizeObserver = new ResizeObserver(() => {
-                if (quotaChartState && quotaChartState.chart === chart && !chart.isDisposed()) {
+                if (usageChartState && usageChartState.chart === chart && !chart.isDisposed()) {
                     chart.resize();
                 }
             });
             resizeObserver.observe(chartEl);
-            quotaChartState = { chart, pid, window, range: '5h', reqSeq: 0, resizeObserver };
+            usageChartState = { chart, pid, window, range: '5h', reqSeq: 0, resizeObserver };
 
             // range toggle
             const toggle = document.getElementById('quotaRangeToggle');
@@ -2366,7 +2370,7 @@
                 b.onclick = () => {
                     toggle.querySelectorAll('button').forEach(x => x.classList.remove('active'));
                     b.classList.add('active');
-                    quotaChartState.range = b.dataset.range;
+                    usageChartState.range = b.dataset.range;
                     loadQuotaChart(b.dataset.range);
                 };
             });
@@ -2376,23 +2380,23 @@
 
         function hideQuotaChartModal() {
             document.getElementById('quotaChartModal').classList.remove('show');
-            if (quotaChartState) {
-                if (quotaChartState.resizeObserver) quotaChartState.resizeObserver.disconnect();
-                quotaChartState.chart.dispose();
-                quotaChartState = null;
+            if (usageChartState) {
+                if (usageChartState.resizeObserver) usageChartState.resizeObserver.disconnect();
+                usageChartState.chart.dispose();
+                usageChartState = null;
             }
         }
 
         async function loadQuotaChart(range) {
-            if (!quotaChartState) return;
-            const { chart, pid, window, reqSeq } = quotaChartState;
-            const mySeq = quotaChartState.reqSeq = reqSeq + 1;
+            if (!usageChartState) return;
+            const { chart, pid, window, reqSeq } = usageChartState;
+            const mySeq = usageChartState.reqSeq = reqSeq + 1;
             try {
                 const [quotaRes, tokenRes] = await Promise.all([
                     fetch(`/api/providers/${pid}/quota-history?window=${window}&range=${range}`),
                     fetch(`/api/providers/${pid}/token-history?range=${range}`),
                 ]);
-                if (mySeq !== quotaChartState.reqSeq) return;
+                if (mySeq !== usageChartState.reqSeq) return;
                 if (!quotaRes.ok || !tokenRes.ok) throw new Error(`HTTP ${quotaRes.status}/${tokenRes.status}`);
 
                 const quotaData = await quotaRes.json();
@@ -2411,7 +2415,7 @@
                     current.reset_in_human ? `下次重置: ${current.reset_in_human}` : '';
                 document.getElementById('quotaChartPerPercent').textContent = perPercent;
             } catch (err) {
-                if (mySeq !== quotaChartState.reqSeq) return;
+                if (mySeq !== usageChartState.reqSeq) return;
                 chart.setOption({
                     title: { text: `加载失败: ${err.message}`, left: 'center', top: 'center',
                              textStyle: { color: '#e53e3e', fontSize: 14 } }
@@ -2518,8 +2522,8 @@
         const _origApplyQuotaUpdate = applyQuotaUpdate;
         applyQuotaUpdate = function(quotas) {
             _origApplyQuotaUpdate(quotas);
-            if (quotaChartState && quotas[quotaChartState.pid]) {
-                loadQuotaChart(quotaChartState.range);
+            if (usageChartState && quotas[usageChartState.pid]) {
+                loadQuotaChart(usageChartState.range);
             }
         };
     </script>
