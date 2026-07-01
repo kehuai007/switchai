@@ -279,6 +279,7 @@
         .modal-footer { display: flex; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 13px; color: #4a5568; }
         .quota-block-toggle { display: block; font-size: 11px; margin-top: 6px; cursor: pointer; }
         .quota-block-toggle input { margin-right: 3px; vertical-align: middle; }
+        .quota-block-threshold { font-size: 11px; margin-left: 4px; padding: 0 2px; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -1583,20 +1584,40 @@
         // Delegated handler: survives re-renders of provider list.
         document.addEventListener('change', (e) => {
             const cb = e.target.closest('.quota-block-cb');
-            if (!cb) return;
-            const pid = cb.closest('.quota-block-toggle').getAttribute('data-pid');
-            const enabled = cb.checked;
-            cb.disabled = true;
-            fetch(`/api/providers/${pid}/quota-block-enabled`, {
-                method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({enabled}),
-            }).then(r => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-            }).catch(err => {
-                alert('切换失败: ' + err.message);
-                cb.checked = !enabled; // revert
-            }).finally(() => { cb.disabled = false; });
+            if (cb) {
+                const pid = cb.closest('.quota-block-toggle').getAttribute('data-pid');
+                const enabled = cb.checked;
+                cb.disabled = true;
+                fetch(`/api/providers/${pid}/quota-block-enabled`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled}),
+                }).then(r => {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                }).catch(err => {
+                    alert('切换失败: ' + err.message);
+                    cb.checked = !enabled; // revert
+                }).finally(() => { cb.disabled = false; });
+                return;
+            }
+
+            const sel = e.target.closest('.quota-block-threshold');
+            if (sel) {
+                const pid = sel.getAttribute('data-pid');
+                const threshold = parseInt(sel.value, 10);
+                if (Number.isNaN(threshold) || threshold < 1 || threshold > 100) return; // sanity guard
+                sel.disabled = true;
+                fetch(`/api/providers/${pid}/quota-block-threshold`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({threshold}),
+                }).then(r => {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                }).catch(err => {
+                    alert('设置失败: ' + err.message);
+                }).finally(() => { sel.disabled = false; });
+                return;
+            }
         });
 
         async function loadStats() {
@@ -1661,6 +1682,17 @@
             if (used >= 95) return 'redOrange';
             if (used >= 80) return 'orange';
             return 'cyan';
+        }
+
+        // buildThresholdOptions renders <option> elements 1..100; current defaults to 99
+        // when provider has no explicit threshold yet (legacy data).
+        function buildThresholdOptions(current) {
+            const selected = current || 99;
+            let html = '';
+            for (let i = 1; i <= 100; i++) {
+                html += `<option value="${i}"${i === selected ? ' selected' : ''}>${i}</option>`;
+            }
+            return html;
         }
 
         function renderQuotaBars(p) {
@@ -1732,6 +1764,10 @@
                             <label class="quota-block-toggle" data-pid="${p.id}">
                                 <input type="checkbox" class="quota-block-cb" ${p.quota_block_enabled ? 'checked' : ''} />
                                 限额拦截
+                                <select class="quota-block-threshold" data-pid="${p.id}">
+                                    ${buildThresholdOptions(p.quota_block_threshold)}
+                                </select>
+                                %
                             </label>
                         </div>
                         <button type="button" class="usage-stats-btn"
