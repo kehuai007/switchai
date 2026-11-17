@@ -592,14 +592,14 @@
                 </div>
                 <div style="border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px;">
                     <h4 style="margin-bottom: 10px; color: #4a5568;">测试 API 连接</h4>
-                    <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="editKeyProviderType" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                        <select id="editKeyProviderType" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; flex: 0 0 auto; max-width: 100%;">
                             <option value="anthropic">Anthropic 接口</option>
                             <option value="openai">OpenAI 接口</option>
                         </select>
-                        <select id="editKeyTestModel" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; flex: 1;">
+                        <select id="editKeyTestModel" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; flex: 1 1 220px; min-width: 0; max-width: 100%;">
                         </select>
-                        <button type="button" class="btn-warning" onclick="testServerKey()">测试连接</button>
+                        <button type="button" class="btn-warning" onclick="testServerKey()" style="flex: 0 0 auto; white-space: nowrap;">测试连接</button>
                     </div>
                     <div id="editKeyTestResult" class="hidden" style="margin-top: 10px; padding: 10px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></div>
                 </div>
@@ -1242,7 +1242,13 @@
                 modelSelect.innerHTML = renderProviderModelOptions(this.value, '');
                 autoSave();
             });
-            modelSelect.addEventListener('change', autoSave);
+            modelSelect.addEventListener('change', function() {
+                // 新增映射时用户模型名一般与服务商模型同名：留空则自动带入，随后可微调。
+                if (!userModelInput.value.trim() && this.value) {
+                    userModelInput.value = this.value;
+                }
+                autoSave();
+            });
 
             tbody.appendChild(tr);
 

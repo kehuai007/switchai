@@ -16,6 +16,7 @@ import (
 	"strings"
 	"switchai/config"
 	"switchai/history"
+	"switchai/proxy"
 	"switchai/quota"
 	"switchai/stats"
 	"time"
@@ -251,7 +252,7 @@ func totpSetup(c *gin.Context) {
 	otpURL := fmt.Sprintf("otpauth://totp/SwitchAI:admin?secret=%s&issuer=SwitchAI&period=30", secret)
 
 	c.JSON(http.StatusOK, gin.H{
-		"secret": secret,
+		"secret":  secret,
 		"otpauth": otpURL,
 	})
 }
@@ -403,11 +404,11 @@ func getServerKeyStats(c *gin.Context) {
 	keyStat := stats.GetKeyStats(id)
 	if keyStat == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"key_id":       id,
+			"key_id":        id,
 			"input_tokens":  0,
 			"output_tokens": 0,
-			"total_tokens": 0,
-			"ip_addresses": []string{},
+			"total_tokens":  0,
+			"ip_addresses":  []string{},
 			"request_count": 0,
 		})
 		return
@@ -815,8 +816,8 @@ func testProvider(c *gin.Context) {
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
-			// 测试只是要确认连通+看到完整回复，10 太短会触发 finish_reason=length 让 AI 答一半就停。
-			"max_tokens": 256,
+			// 测试只是要确认连通+看到完整回复；OpenAI 新模型只认 max_completion_tokens。
+			"max_completion_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(openAIReq)
 		targetURL = config.BuildProviderURL(provider.BaseURL, "/chat/completions")
@@ -835,30 +836,48 @@ func testProvider(c *gin.Context) {
 		log.Printf("🔗 Claude format, targetURL: %s", targetURL)
 	}
 
-	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
-	if err != nil {
-		log.Printf("❌ testProvider: failed to create request: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
-		return
-	}
-
-	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	if !isOpenAIFormat {
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-
 	client := &http.Client{Timeout: 30 * time.Second}
+	sendTestRequest := func(payload []byte) (*http.Response, []byte, error) {
+		r, err := http.NewRequest("POST", targetURL, bytes.NewReader(payload))
+		if err != nil {
+			return nil, nil, err
+		}
+		r.Header.Set("Authorization", "Bearer "+provider.APIKey)
+		r.Header.Set("Content-Type", "application/json")
+		if !isOpenAIFormat {
+			r.Header.Set("anthropic-version", "2023-06-01")
+		}
+		resp, err := client.Do(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		return resp, respBody, nil
+	}
+
 	log.Printf("📤 testProvider: sending request to %s", targetURL)
-	resp, err := client.Do(req)
+	resp, respBody, err := sendTestRequest(reqBody)
 	if err != nil {
 		log.Printf("❌ testProvider: request failed: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Connection failed: " + err.Error()})
 		return
 	}
-	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	// 兼容重试：部分上游模型（OpenAI 系，如 gpt-6）拒收 max_tokens，要求改用
+	// max_completion_tokens；Anthropic 协议客户端固定发 max_tokens，这里按上游
+	// 报错改写参数后重试一次，避免测试按钮误报模型不可用。
+	if proxy.IsMaxTokensParamRejected(resp.StatusCode, respBody) {
+		if patched, ok := proxy.RewriteMaxTokensAsCompletion(reqBody); ok {
+			log.Printf("⚠️ testProvider: 上游不支持 max_tokens，改用 max_completion_tokens 重试")
+			if retryResp, retryBody, retryErr := sendTestRequest(patched); retryErr == nil {
+				resp, respBody = retryResp, retryBody
+			} else {
+				log.Printf("❌ testProvider: retry failed: %v", retryErr)
+			}
+		}
+	}
+
 	maxLen := 200
 	if len(respBody) < maxLen {
 		maxLen = len(respBody)
@@ -901,9 +920,9 @@ func testProvider(c *gin.Context) {
 		})
 	} else {
 		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"status":  resp.StatusCode,
-			"message": "Connection failed",
+			"success":  false,
+			"status":   resp.StatusCode,
+			"message":  "Connection failed",
 			"response": string(respBody),
 		})
 	}
@@ -913,7 +932,7 @@ func testServerKey(c *gin.Context) {
 	keyID := c.Param("id")
 
 	var req struct {
-		ProviderType  string `json:"provider_type"`  // "anthropic" 或 "openai"
+		ProviderType  string `json:"provider_type"` // "anthropic" 或 "openai"
 		ProviderID    string `json:"provider_id"`
 		ProviderModel string `json:"provider_model"` // 仅用于日志/校验，真正请求体里用的是 user_model
 		UserModel     string `json:"user_model"`     // 用户原始请求的模型名（映射的 user_model 字段）
@@ -965,7 +984,8 @@ func testServerKey(c *gin.Context) {
 			"messages": []map[string]interface{}{
 				{"role": "user", "content": "你是什么模型"},
 			},
-			"max_tokens": 256,
+			// OpenAI 新模型只认 max_completion_tokens；走代理时 A→O/O→A 会再做协议转换。
+			"max_completion_tokens": 256,
 		}
 		reqBody, _ = json.Marshal(openAIReq)
 		targetURL = baseURL + "/v1/chat/completions"
@@ -1072,7 +1092,7 @@ func getDailyStats(c *gin.Context) {
 	today := s.GetTodaySummary()
 	dailyHistory := s.GetDailyHistory()
 	c.JSON(http.StatusOK, gin.H{
-		"today":        today,
+		"today":         today,
 		"daily_history": dailyHistory,
 	})
 }

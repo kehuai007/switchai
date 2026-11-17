@@ -43,7 +43,7 @@ type openAIModelEntry struct {
 
 // openAIModelsList 是 OpenAI /v1/models 顶层响应的 JSON 形状。
 type openAIModelsList struct {
-	Object string            `json:"object"`
+	Object string             `json:"object"`
 	Data   []openAIModelEntry `json:"data"`
 }
 
@@ -108,6 +108,10 @@ func listModelsForKey(c *gin.Context) {
 func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Provider, maxRetries int) (resp *http.Response, finalAttempt int, err error) {
 	var lastResp *http.Response
 	var lastErr error
+	// 参数兼容重试各只做一次：标准 OpenAI 用 max_completion_tokens，
+	// 但 Anthropic 兼容层/旧 OpenAI 兼容服务可能只认其中一个，按上游明确报错降级。
+	compatMaxTokensTried := false
+	compatCompletionTokensTried := false
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		finalAttempt = attempt
@@ -136,6 +140,30 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 				continue
 			}
 			return nil, attempt, err
+		}
+
+		// 参数兼容重试：部分 OpenAI 系模型（如 gpt-6）在 Anthropic 兼容层下仍拒收
+		// max_tokens，要求改用 max_completion_tokens；而 Anthropic 协议客户端固定发送
+		// max_tokens，原样透传会被上游 400。检测到该错误后把参数改名重试一次。
+		if !compatMaxTokensTried && attempt < maxRetries && IsMaxTokensParamRejected(resp.StatusCode, respBody) {
+			if patched, ok := RewriteMaxTokensAsCompletion(bodyBytes); ok {
+				bodyBytes = patched
+				req.ContentLength = int64(len(patched))
+				compatMaxTokensTried = true
+				logger.Info("⚠️ 上游不支持 max_tokens，已改用 max_completion_tokens 重试 (尝试 %d/%d)", attempt, maxRetries)
+				continue
+			}
+		}
+
+		// 反向兼容：旧 OpenAI 兼容服务只认 max_tokens，明确拒收 max_completion_tokens 时降级。
+		if !compatCompletionTokensTried && attempt < maxRetries && IsMaxCompletionTokensRejected(resp.StatusCode, respBody) {
+			if patched, ok := RewriteMaxCompletionTokensAsMaxTokens(bodyBytes); ok {
+				bodyBytes = patched
+				req.ContentLength = int64(len(patched))
+				compatCompletionTokensTried = true
+				logger.Info("⚠️ 上游不支持 max_completion_tokens，已降级为 max_tokens 重试 (尝试 %d/%d)", attempt, maxRetries)
+				continue
+			}
 		}
 
 		// 检查响应是否包含需要重试的错误
@@ -182,6 +210,86 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 	}
 
 	return lastResp, maxRetries, lastErr
+}
+
+// isParamUnsupported 判断 400 错误是否明确点名某个参数不被支持。
+// 必须精确匹配“点名”的措辞，避免把 “Use 'max_completion_tokens' instead”
+// 里的引用误判成 max_tokens 被拒。
+func isParamUnsupported(respBody []byte, param string) bool {
+	msg := strings.ToLower(string(respBody))
+	if msg == "" {
+		return false
+	}
+	p := strings.ToLower(param)
+	patterns := []string{
+		"unsupported parameter: '" + p + "'",
+		`unsupported parameter: "` + p + `"`,
+		"unsupported parameter: " + p,
+		"unknown parameter: '" + p + "'",
+		`unknown parameter: "` + p + `"`,
+		"unknown parameter: " + p,
+		"'" + p + "' is not supported",
+		p + " is not supported",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsMaxTokensParamRejected 判断上游是否明确拒绝 max_tokens
+// （新 OpenAI 推理模型要求改用 max_completion_tokens）。
+func IsMaxTokensParamRejected(statusCode int, respBody []byte) bool {
+	if statusCode != http.StatusBadRequest || len(respBody) == 0 {
+		return false
+	}
+	return isParamUnsupported(respBody, "max_tokens")
+}
+
+// IsMaxCompletionTokensRejected 判断上游是否明确拒绝 max_completion_tokens。
+// 一些旧的 OpenAI 兼容服务只认 max_tokens，需要反向降级。
+func IsMaxCompletionTokensRejected(statusCode int, respBody []byte) bool {
+	if statusCode != http.StatusBadRequest || len(respBody) == 0 {
+		return false
+	}
+	return isParamUnsupported(respBody, "max_completion_tokens")
+}
+
+func rewriteTokenLimitParam(body []byte, from, to string) ([]byte, bool) {
+	if len(body) == 0 || !json.Valid(body) {
+		return body, false
+	}
+	var reqBody map[string]interface{}
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return body, false
+	}
+	value, ok := reqBody[from]
+	if !ok {
+		return body, false
+	}
+	if _, exists := reqBody[to]; exists {
+		return body, false
+	}
+	delete(reqBody, from)
+	reqBody[to] = value
+	patched, err := json.Marshal(reqBody)
+	if err != nil {
+		return body, false
+	}
+	return patched, true
+}
+
+// RewriteMaxTokensAsCompletion 把 JSON 请求体里的 max_tokens 改名为 max_completion_tokens。
+func RewriteMaxTokensAsCompletion(body []byte) ([]byte, bool) {
+	return rewriteTokenLimitParam(body, "max_tokens", "max_completion_tokens")
+}
+
+// RewriteMaxCompletionTokensAsMaxTokens 把 max_completion_tokens 降级改名为 max_tokens，
+// 用于只支持旧字段的 OpenAI 兼容服务。
+func RewriteMaxCompletionTokensAsMaxTokens(body []byte) ([]byte, bool) {
+	return rewriteTokenLimitParam(body, "max_completion_tokens", "max_tokens")
 }
 
 // resolveRouteTarget 根据 keyID + userModel 解析出真正的目标 provider 与其下模型名
@@ -410,8 +518,10 @@ func proxyHandler(c *gin.Context) {
 		}
 	}
 
-	// 处理流式响应
-	if isStream {
+	// 处理流式响应。上游返回错误或 JSON 时按非流式透传/转换，
+	// 避免转换器把错误体当成事件流吞掉。
+	contentType := resp.Header.Get("Content-Type")
+	if isStream && resp.StatusCode < http.StatusBadRequest && !strings.Contains(contentType, "application/json") {
 		handleStreamResponse(c, resp, provider, requestID, startTime, c.Request.Method, c.Request.URL.Path, modifiedRequestBody, c.Request.Header, requestedModel, actualModel, userModel, keyID, clientIP, isIncomingOpenAIFormat, retryCount)
 		return
 	}
@@ -457,173 +567,118 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	firstToken := true
 	var responseBody strings.Builder
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-
-		// 如果请求格式与提供商格式不匹配，需要转换响应
-		// provider.IsOpenAIFormat == isIncomingOpenAIFormat: 格式匹配，直接转发
-		// provider.IsOpenAIFormat && !isIncomingOpenAIFormat: 请求是Anthropic转OpenAI，响应是OpenAI，需转Claude
-		// !provider.IsOpenAIFormat && isIncomingOpenAIFormat: 请求是OpenAI转Anthropic，响应是Anthropic，需转OpenAI
-		needsConversion := provider.IsOpenAIFormat != isIncomingOpenAIFormat
-
-		if needsConversion && provider.IsOpenAIFormat {
-			lineStr := string(line)
-			if strings.HasPrefix(lineStr, "data: ") {
-				data := strings.TrimPrefix(lineStr, "data: ")
-				if data == "[DONE]" {
-					// 转换为 Claude 格式的结束标记
-					claudeDone := "data: {\"type\":\"message_stop\"}\n\n"
-					if _, err := c.Writer.Write([]byte(claudeDone)); err != nil {
-						return
-					}
-					flusher.Flush()
-					responseBody.WriteString(claudeDone)
-					continue
-				}
-
-				var openaiChunk map[string]interface{}
-				if err := json.Unmarshal([]byte(data), &openaiChunk); err == nil {
-					// 提取模型信息
-					if m, ok := openaiChunk["model"].(string); ok && m != "" {
-						model = m
-					}
-
-					// 转换为 Claude 格式的流式响应
-					claudeChunk := convertOpenAIStreamToClaude(openaiChunk)
-					if claudeData, err := json.Marshal(claudeChunk); err == nil {
-						claudeLine := "data: " + string(claudeData) + "\n\n"
-						if _, err := c.Writer.Write([]byte(claudeLine)); err != nil {
-							return
-						}
-						flusher.Flush()
-						responseBody.WriteString(claudeLine)
-
-						// 提取 usage 信息
-						if usage, ok := claudeChunk["usage"].(map[string]interface{}); ok {
-							if input, ok := usage["input_tokens"].(int); ok {
-								inputTokens = input
-							}
-							if output, ok := usage["output_tokens"].(int); ok {
-								outputTokens = output
-							}
-						}
-					} else {
-						logger.Error("❌ Claude chunk JSON 序列化失败: %v, chunk: %+v", err, claudeChunk)
-					}
-				} else {
-					logger.Error("❌ OpenAI chunk JSON 解析失败: %v, 原始数据: %s", err, data)
-				}
-			} else {
-				// 非 data 行直接转发
-				if _, err := c.Writer.Write(line); err != nil {
-					return
-				}
-				if _, err := c.Writer.Write([]byte("\n")); err != nil {
-					return
-				}
-				flusher.Flush()
-				responseBody.Write(line)
-				responseBody.WriteString("\n")
-			}
-		} else if needsConversion {
-			// Anthropic 响应需要转换为 OpenAI 格式 (请求是 OpenAI 格式被转换为 Anthropic)
-			lineStr := string(line)
-			if strings.HasPrefix(lineStr, "data: ") {
-				data := strings.TrimPrefix(lineStr, "data: ")
-				if data == "[DONE]" {
-					openaiDone := "data: [DONE]\n\n"
-					if _, err := c.Writer.Write([]byte(openaiDone)); err != nil {
-						return
-					}
-					flusher.Flush()
-					responseBody.WriteString(openaiDone)
-					continue
-				}
-
-				var claudeChunk map[string]interface{}
-				if err := json.Unmarshal([]byte(data), &claudeChunk); err == nil {
-					// 提取模型信息
-					if m, ok := claudeChunk["model"].(string); ok && m != "" {
-						model = m
-					}
-
-					// 转换为 OpenAI 格式的流式响应
-					openaiChunk := convertClaudeStreamToOpenAI(claudeChunk)
-					if openaiData, err := json.Marshal(openaiChunk); err == nil {
-						openaiLine := "data: " + string(openaiData) + "\n\n"
-						if _, err := c.Writer.Write([]byte(openaiLine)); err != nil {
-							return
-						}
-						flusher.Flush()
-						responseBody.WriteString(openaiLine)
-
-						// 提取 usage 信息
-						if usage, ok := claudeChunk["usage"].(map[string]interface{}); ok {
-							if input, ok := usage["input_tokens"].(float64); ok {
-								inputTokens = int(input)
-							}
-							if output, ok := usage["output_tokens"].(float64); ok {
-								outputTokens = int(output)
-							}
-						}
-					}
-				}
-			} else {
-				// 非 data 行直接转发
-				if _, err := c.Writer.Write(line); err != nil {
-					return
-				}
-				if _, err := c.Writer.Write([]byte("\n")); err != nil {
-					return
-				}
-				flusher.Flush()
-				responseBody.Write(line)
-				responseBody.WriteString("\n")
-			}
+	// 请求格式与提供商格式不一致时，需要状态化转换流式事件：
+	//   provider 是 OpenAI 格式：上游 OpenAI SSE -> 客户端 Anthropic SSE
+	//   provider 是 Anthropic 格式：上游 Anthropic SSE -> 客户端 OpenAI SSE
+	needsConversion := provider.IsOpenAIFormat != isIncomingOpenAIFormat
+	var o2c *openAIToClaudeStream
+	var c2o *claudeToOpenAIStream
+	if needsConversion {
+		if provider.IsOpenAIFormat {
+			o2c = newOpenAIToClaudeStream()
 		} else {
-			// 格式匹配，Claude 格式直接转发
-			if _, err := c.Writer.Write(line); err != nil {
-				return
-			}
-			if _, err := c.Writer.Write([]byte("\n")); err != nil {
-				return
-			}
-			flusher.Flush()
+			c2o = newClaudeToOpenAIStream()
+		}
+	}
 
-			// Collect response body
-			responseBody.Write(line)
-			responseBody.WriteString("\n")
+	writeFrame := func(frame string) bool {
+		if frame == "" {
+			return true
+		}
+		if _, err := c.Writer.Write([]byte(frame)); err != nil {
+			return false
+		}
+		flusher.Flush()
+		responseBody.WriteString(frame)
+		if firstToken {
+			firstTokenTime = time.Now()
+			firstToken = false
+		}
+		return true
+	}
 
-			lineStr := string(line)
-			if strings.HasPrefix(lineStr, "data: ") {
-				data := strings.TrimPrefix(lineStr, "data: ")
-				if data == "[DONE]" {
-					continue
-				}
-
-				var streamData map[string]interface{}
-				if err := json.Unmarshal([]byte(data), &streamData); err == nil {
-					// 提取模型信息
-					if m, ok := streamData["model"].(string); ok && m != "" {
-						model = m
-					}
-					// 提取 usage 信息
-					if usage, ok := streamData["usage"].(map[string]interface{}); ok {
-						if input, ok := usage["input_tokens"].(float64); ok {
-							inputTokens = int(input)
-						}
-						if output, ok := usage["output_tokens"].(float64); ok {
-							outputTokens = int(output)
-						}
-					}
-				}
+	writeFrames := func(frames []string) bool {
+		for _, frame := range frames {
+			if !writeFrame(frame) {
+				return false
 			}
 		}
+		return true
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimRight(string(scanner.Bytes()), "\r")
+
+		if needsConversion {
+			// 转换模式只消费 data: 负载；event: 行和空行由转换器重新生成。
+			data, ok := sseDataPayload(line)
+			if !ok {
+				continue
+			}
+			if data == "[DONE]" {
+				if o2c != nil && !writeFrames(o2c.Finish()) {
+					return
+				}
+				if c2o != nil && !writeFrames(c2o.Finish()) {
+					return
+				}
+				continue
+			}
+			if o2c != nil {
+				if !writeFrames(o2c.Feed(data)) {
+					return
+				}
+			} else {
+				if !writeFrames(c2o.Feed(data)) {
+					return
+				}
+			}
+			continue
+		}
+
+		// 格式一致，原样转发。
+		if _, err := c.Writer.Write([]byte(line + "\n")); err != nil {
+			return
+		}
+		flusher.Flush()
+		responseBody.WriteString(line)
+		responseBody.WriteString("\n")
 
 		if firstToken {
 			firstTokenTime = time.Now()
 			firstToken = false
 		}
+
+		if data, ok := sseDataPayload(line); ok && data != "[DONE]" {
+			var streamData map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &streamData); err == nil {
+				if m, ok := streamData["model"].(string); ok && m != "" {
+					model = m
+				}
+				if usage, ok := streamData["usage"].(map[string]interface{}); ok {
+					if input, ok := asInt(usage["input_tokens"]); ok {
+						inputTokens = input
+					}
+					if output, ok := asInt(usage["output_tokens"]); ok {
+						outputTokens = output
+					}
+				}
+			}
+		}
+	}
+
+	if o2c != nil {
+		if !writeFrames(o2c.Finish()) {
+			return
+		}
+		inputTokens, outputTokens = o2c.Usage()
+		model = o2c.ModelName()
+	} else if c2o != nil {
+		if !writeFrames(c2o.Finish()) {
+			return
+		}
+		inputTokens, outputTokens = c2o.Usage()
+		model = c2o.ModelName()
 	}
 
 	duration := time.Since(startTime).Milliseconds()
@@ -846,347 +901,4 @@ func calculateCost(model string, inputTokens, outputTokens int) float64 {
 		inputCost, outputCost = 0.000003, 0.000015
 	}
 	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
-}
-
-// convertClaudeToOpenAI 将 Claude 格式的请求转换为 OpenAI 格式
-func convertClaudeToOpenAI(claudeReq map[string]interface{}) map[string]interface{} {
-	openaiReq := make(map[string]interface{})
-
-	// 复制基本字段
-	if model, ok := claudeReq["model"]; ok {
-		openaiReq["model"] = model
-	}
-	if stream, ok := claudeReq["stream"]; ok {
-		openaiReq["stream"] = stream
-	}
-	if temp, ok := claudeReq["temperature"]; ok {
-		openaiReq["temperature"] = temp
-	}
-	if topP, ok := claudeReq["top_p"]; ok {
-		openaiReq["top_p"] = topP
-	}
-
-	// 转换 max_tokens
-	if maxTokens, ok := claudeReq["max_tokens"]; ok {
-		openaiReq["max_tokens"] = maxTokens
-	}
-
-	// 处理 messages - Claude 的 system 可能是单独字段
-	messages := []interface{}{}
-
-	// 如果有 system 字段，添加为第一条消息
-	if system, ok := claudeReq["system"].(string); ok && system != "" {
-		messages = append(messages, map[string]interface{}{
-			"role":    "system",
-			"content": system,
-		})
-	}
-
-	// 添加其他消息
-	if claudeMessages, ok := claudeReq["messages"].([]interface{}); ok {
-		messages = append(messages, claudeMessages...)
-	}
-
-	openaiReq["messages"] = messages
-
-	return openaiReq
-}
-
-// convertOpenAIToClaude 将 OpenAI 格式的响应转换为 Claude 格式
-func convertOpenAIToClaude(openaiResp map[string]interface{}) map[string]interface{} {
-	claudeResp := make(map[string]interface{})
-
-	// 基本字段映射
-	if id, ok := openaiResp["id"]; ok {
-		claudeResp["id"] = id
-	}
-	if model, ok := openaiResp["model"]; ok {
-		claudeResp["model"] = model
-	}
-
-	claudeResp["type"] = "message"
-	claudeResp["role"] = "assistant"
-
-	// 转换 choices 为 content
-	if choices, ok := openaiResp["choices"].([]interface{}); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]interface{}); ok {
-			if message, ok := choice["message"].(map[string]interface{}); ok {
-				if content, ok := message["content"].(string); ok {
-					claudeResp["content"] = []map[string]interface{}{
-						{
-							"type": "text",
-							"text": content,
-						},
-					}
-				}
-			}
-			if finishReason, ok := choice["finish_reason"]; ok {
-				claudeResp["stop_reason"] = finishReason
-			}
-		}
-	}
-
-	// 转换 usage
-	if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
-		claudeUsage := make(map[string]interface{})
-		if promptTokens, ok := usage["prompt_tokens"]; ok {
-			claudeUsage["input_tokens"] = promptTokens
-		}
-		if completionTokens, ok := usage["completion_tokens"]; ok {
-			claudeUsage["output_tokens"] = completionTokens
-		}
-		claudeResp["usage"] = claudeUsage
-	}
-
-	return claudeResp
-}
-
-// convertClaudeToOpenAIResponse 将 Claude 格式的非流式响应转换为 OpenAI 格式
-func convertClaudeToOpenAIResponse(claudeResp map[string]interface{}) map[string]interface{} {
-	openaiResp := make(map[string]interface{})
-
-	// 基本字段映射
-	if id, ok := claudeResp["id"]; ok {
-		openaiResp["id"] = id
-	}
-	if model, ok := claudeResp["model"]; ok {
-		openaiResp["model"] = model
-	}
-	openaiResp["object"] = "chat.completion"
-	openaiResp["created"] = time.Now().Unix()
-
-	// 转换 content 为 choices
-	var content string
-	if contentArr, ok := claudeResp["content"].([]interface{}); ok && len(contentArr) > 0 {
-		if firstContent, ok := contentArr[0].(map[string]interface{}); ok {
-			if text, ok := firstContent["text"].(string); ok {
-				content = text
-			}
-		}
-	}
-
-	var finishReason string
-	if stopReason, ok := claudeResp["stop_reason"].(string); ok {
-		finishReason = stopReason
-	}
-
-	openaiResp["choices"] = []map[string]interface{}{
-		{
-			"index": 0,
-			"message": map[string]interface{}{
-				"role":    "assistant",
-				"content": content,
-			},
-			"finish_reason": finishReason,
-		},
-	}
-
-	// 转换 usage
-	if usage, ok := claudeResp["usage"].(map[string]interface{}); ok {
-		openaiUsage := make(map[string]interface{})
-		if inputTokens, ok := usage["input_tokens"]; ok {
-			openaiUsage["prompt_tokens"] = inputTokens
-		}
-		if outputTokens, ok := usage["output_tokens"]; ok {
-			openaiUsage["completion_tokens"] = outputTokens
-		}
-		if inputTokens, ok := usage["input_tokens"].(int); ok {
-			if outputTokens, ok := usage["output_tokens"].(int); ok {
-				openaiUsage["total_tokens"] = inputTokens + outputTokens
-			}
-		}
-		openaiResp["usage"] = openaiUsage
-	}
-
-	return openaiResp
-}
-
-// convertOpenAIStreamToClaude 将 OpenAI 格式的流式响应块转换为 Claude 格式
-func convertOpenAIStreamToClaude(openaiChunk map[string]interface{}) map[string]interface{} {
-	claudeChunk := make(map[string]interface{})
-
-	// 基本字段
-	if id, ok := openaiChunk["id"]; ok {
-		claudeChunk["id"] = id
-	}
-	if model, ok := openaiChunk["model"]; ok {
-		claudeChunk["model"] = model
-	}
-
-	// 处理 choices
-	if choices, ok := openaiChunk["choices"].([]interface{}); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]interface{}); ok {
-			// 检查是否有 delta
-			if delta, ok := choice["delta"].(map[string]interface{}); ok {
-				if content, ok := delta["content"].(string); ok && content != "" {
-					// 内容块
-					claudeChunk["type"] = "content_block_delta"
-					claudeChunk["delta"] = map[string]interface{}{
-						"type": "text_delta",
-						"text": content,
-					}
-				} else if role, ok := delta["role"].(string); ok {
-					// 开始块
-					claudeChunk["type"] = "message_start"
-					claudeChunk["message"] = map[string]interface{}{
-						"id":    claudeChunk["id"],
-						"type":  "message",
-						"role":  role,
-						"model": claudeChunk["model"],
-					}
-				}
-			}
-
-			// 检查 finish_reason
-			if finishReason, ok := choice["finish_reason"]; ok && finishReason != nil {
-				claudeChunk["type"] = "message_delta"
-				claudeChunk["delta"] = map[string]interface{}{
-					"stop_reason": finishReason,
-				}
-			}
-		}
-	}
-
-	// 转换 usage（如果有）
-	if usage, ok := openaiChunk["usage"].(map[string]interface{}); ok {
-		claudeUsage := make(map[string]interface{})
-		if promptTokens, ok := usage["prompt_tokens"].(float64); ok {
-			claudeUsage["input_tokens"] = int(promptTokens)
-		}
-		if completionTokens, ok := usage["completion_tokens"].(float64); ok {
-			claudeUsage["output_tokens"] = int(completionTokens)
-		}
-		claudeChunk["usage"] = claudeUsage
-	}
-
-	return claudeChunk
-}
-
-// convertOpenAIToClaudeRequest 将 OpenAI 格式的请求转换为 Claude 格式
-func convertOpenAIToClaudeRequest(openaiReq map[string]interface{}) map[string]interface{} {
-	claudeReq := make(map[string]interface{})
-
-	// 复制基本字段
-	if model, ok := openaiReq["model"]; ok {
-		claudeReq["model"] = model
-	}
-	if stream, ok := openaiReq["stream"]; ok {
-		claudeReq["stream"] = stream
-	}
-	if temp, ok := openaiReq["temperature"]; ok {
-		claudeReq["temperature"] = temp
-	}
-	if topP, ok := openaiReq["top_p"]; ok {
-		claudeReq["top_p"] = topP
-	}
-	if maxTokens, ok := openaiReq["max_tokens"]; ok {
-		claudeReq["max_tokens"] = maxTokens
-	}
-
-	// 转换 messages - OpenAI 的 role:system 可能内嵌在 messages 里
-	var systemMsg string
-	var claudeMessages []interface{}
-
-	if messages, ok := openaiReq["messages"].([]interface{}); ok {
-		for _, msg := range messages {
-			if msgMap, ok := msg.(map[string]interface{}); ok {
-				role, _ := msgMap["role"].(string)
-				content, _ := msgMap["content"].(string)
-				if role == "system" {
-					systemMsg = content
-				} else {
-					claudeMessages = append(claudeMessages, msgMap)
-				}
-			}
-		}
-	}
-
-	if systemMsg != "" {
-		claudeReq["system"] = systemMsg
-	}
-	claudeReq["messages"] = claudeMessages
-
-	return claudeReq
-}
-
-// convertClaudeStreamToOpenAI 将 Claude 流式响应转换为 OpenAI 格式
-func convertClaudeStreamToOpenAI(claudeChunk map[string]interface{}) map[string]interface{} {
-	openaiChunk := make(map[string]interface{})
-
-	// 基本字段
-	if id, ok := claudeChunk["id"]; ok {
-		openaiChunk["id"] = id
-	}
-	if model, ok := claudeChunk["model"]; ok {
-		openaiChunk["model"] = model
-	}
-	openaiChunk["object"] = "chat.completion.chunk"
-
-	// 处理类型
-	chunkType, _ := claudeChunk["type"].(string)
-
-	var choices []interface{}
-	switch chunkType {
-	case "message_start":
-		// 开始消息
-		if msg, ok := claudeChunk["message"].(map[string]interface{}); ok {
-			choices = []interface{}{
-				map[string]interface{}{
-					"index": 0,
-					"delta": map[string]interface{}{
-						"role": msg["role"],
-					},
-					"finish_reason": nil,
-				},
-			}
-		}
-	case "content_block_delta":
-		// 内容块增量
-		if delta, ok := claudeChunk["delta"].(map[string]interface{}); ok {
-			deltaType, _ := delta["type"].(string)
-			if deltaType == "text_delta" {
-				if text, ok := delta["text"].(string); ok {
-					choices = []interface{}{
-						map[string]interface{}{
-							"index": 0,
-							"delta": map[string]interface{}{
-								"content": text,
-							},
-							"finish_reason": nil,
-						},
-					}
-				}
-			}
-		}
-	case "message_delta":
-		// 消息结束
-		if delta, ok := claudeChunk["delta"].(map[string]interface{}); ok {
-			if stopReason, ok := delta["stop_reason"].(string); ok {
-				choices = []interface{}{
-					map[string]interface{}{
-						"index": 0,
-						"delta": map[string]interface{}{},
-						"finish_reason": stopReason,
-					},
-				}
-			}
-		}
-	}
-
-	openaiChunk["choices"] = choices
-
-	// 转换 usage
-	if usage, ok := claudeChunk["usage"].(map[string]interface{}); ok {
-		openaiUsage := make(map[string]interface{})
-		if inputTokens, ok := usage["input_tokens"].(float64); ok {
-			openaiUsage["prompt_tokens"] = int(inputTokens)
-		}
-		if outputTokens, ok := usage["output_tokens"].(float64); ok {
-			openaiUsage["completion_tokens"] = int(outputTokens)
-		}
-		openaiUsage["total_tokens"] = 0
-		openaiChunk["usage"] = openaiUsage
-	}
-
-	return openaiChunk
 }
