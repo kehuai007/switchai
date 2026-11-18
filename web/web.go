@@ -135,6 +135,7 @@ func RegisterRoutes(r *gin.Engine) {
 
 		// 请求历史
 		api.GET("/history", getHistory)
+		api.GET("/history-filter-options", getHistoryFilterOptions)
 		api.GET("/history/:id", getHistoryDetail)
 
 		// WebSocket
@@ -482,7 +483,7 @@ func handleHistoryWebSocket(c *gin.Context) {
 	log.Println("New history WebSocket client connected")
 
 	// 发送最近 20 条历史记录
-	records, total := history.GetRecordsSummary(1, 20)
+	records, total := history.GetRecordsSummary(1, 20, history.RecordFilters{})
 	if err := conn.WriteJSON(gin.H{"type": "history", "records": records, "total": total}); err != nil {
 		log.Printf("Error sending initial history: %v", err)
 	}
@@ -1119,13 +1120,25 @@ func getHistory(c *gin.Context) {
 		pageSize = 20
 	}
 
-	records, total := history.GetRecordsSummary(page, pageSize)
+	filters := history.RecordFilters{
+		RequestID: c.Query("request_id"),
+		UserModel: c.Query("user_model"),
+		Model:     c.Query("model"),
+		Provider:  c.Query("provider"),
+		KeyID:     c.Query("key_id"),
+		ClientIP:  c.Query("client_ip"),
+	}
+	records, total := history.GetRecordsSummary(page, pageSize, filters)
 	c.JSON(http.StatusOK, gin.H{
 		"records":   records,
 		"total":     total,
 		"page":      page,
 		"page_size": pageSize,
 	})
+}
+
+func getHistoryFilterOptions(c *gin.Context) {
+	c.JSON(http.StatusOK, history.GetFilterOptions())
 }
 
 func getHistoryDetail(c *gin.Context) {

@@ -49,11 +49,13 @@ type QuotaPoint struct {
 
 // TokenPoint is one row in the chart for token consumption.
 type TokenPoint struct {
-	T            int64 `json:"t"`
-	InputTokens  int   `json:"input_tokens"`
-	OutputTokens int   `json:"output_tokens"`
-	TotalTokens  int   `json:"total_tokens"`
-	RequestCount int   `json:"request_count"`
+	T                int64 `json:"t"`
+	InputTokens      int   `json:"input_tokens"`
+	OutputTokens     int   `json:"output_tokens"`
+	CacheReadTokens  int   `json:"cache_read_tokens"`
+	CacheWriteTokens int   `json:"cache_write_tokens"`
+	TotalTokens      int   `json:"total_tokens"`
+	RequestCount     int   `json:"request_count"`
 }
 
 // resolveDataDir returns the data directory in this order:
@@ -267,7 +269,9 @@ func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([
 	if aggregate {
 		rows, err = db.Query(`
 			SELECT (t_bucket/?)*? AS bucket,
-			       SUM(input_tokens), SUM(output_tokens), SUM(total_tokens), SUM(request_count)
+			       SUM(input_tokens), SUM(output_tokens),
+			       SUM(cache_read_tokens), SUM(cache_write_tokens),
+			       SUM(total_tokens), SUM(request_count)
 			FROM provider_token_history
 			WHERE provider_id=? AND t_bucket BETWEEN ? AND ?
 			GROUP BY bucket
@@ -276,7 +280,8 @@ func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([
 			providerID, fromTs, toTs)
 	} else {
 		rows, err = db.Query(`
-			SELECT t_bucket, input_tokens, output_tokens, total_tokens, request_count
+			SELECT t_bucket, input_tokens, output_tokens,
+			       cache_read_tokens, cache_write_tokens, total_tokens, request_count
 			FROM provider_token_history
 			WHERE provider_id=? AND t_bucket BETWEEN ? AND ? AND total_tokens > 0
 			ORDER BY t_bucket ASC`,
@@ -289,7 +294,8 @@ func QueryTokenHistory(providerID string, fromTs, toTs int64, aggregate bool) ([
 	var out []TokenPoint
 	for rows.Next() {
 		var p TokenPoint
-		if err := rows.Scan(&p.T, &p.InputTokens, &p.OutputTokens, &p.TotalTokens, &p.RequestCount); err != nil {
+		if err := rows.Scan(&p.T, &p.InputTokens, &p.OutputTokens,
+			&p.CacheReadTokens, &p.CacheWriteTokens, &p.TotalTokens, &p.RequestCount); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -377,8 +383,9 @@ func recordQuotaSnapshotForTest(providerID, window string, tBucket int64, usedPe
 // the test free of any stats-package dependency.
 func recordTokenBucketForTest(db *sql.DB, providerID string, tBucket int64, in, out, tot, cnt int) {
 	if _, err := db.Exec(`
-		INSERT INTO provider_token_history (provider_id, t_bucket, input_tokens, output_tokens, total_tokens, request_count)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO provider_token_history (provider_id, t_bucket, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, total_tokens, request_count)
+		VALUES (?, ?, ?, ?, 0, 0, ?, ?)
 		ON CONFLICT(provider_id, t_bucket) DO UPDATE SET
 			input_tokens  = input_tokens  + excluded.input_tokens,
 			output_tokens = output_tokens + excluded.output_tokens,

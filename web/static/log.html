@@ -7,7 +7,7 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 1400px; margin: 0 auto; }
+        .container { width: 100%; max-width: 100%; margin: 0 auto; }
         h1 { color: #333; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
         .nav-links { display: flex; gap: 15px; }
         .nav-links a { color: #667eea; text-decoration: none; font-size: 16px; padding: 8px 16px; border-radius: 4px; transition: all 0.3s; }
@@ -31,9 +31,10 @@
         .btn-danger:hover { background: #e53e3e; }
         .btn-primary { background: #667eea; color: white; }
         .btn-primary:hover { background: #5568d3; }
-        .records-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        .records-table th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #e0e0e0; }
-        .records-table td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+        .table-scroll { width: 100%; overflow-x: auto; margin-top: 10px; }
+        .records-table { width: 100%; min-width: 1500px; border-collapse: collapse; }
+        .records-table th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #e0e0e0; white-space: nowrap; }
+        .records-table td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
         .records-table tr:hover { background: #f8f9fa; }
         .records-table td:first-child .time-date { display: block; font-size: 11px; color: #999; line-height: 1.3; white-space: nowrap; }
         .records-table td:first-child .time-time { display: block; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; color: #333; line-height: 1.3; white-space: nowrap; }
@@ -43,10 +44,13 @@
         .badge-retry { background: #ed8936; color: white; }
         .cost { color: #f56565; font-weight: 600; }
         .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+        .filters select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; max-width: 220px; min-width: 140px; }
+        .filters input[type="text"] { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 190px; }
         .log-link { color: #667eea; cursor: pointer; text-decoration: underline; }
         .log-link:hover { color: #5568d3; }
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
-        .modal-content { background: white; margin: 5% auto; padding: 0; border-radius: 8px; width: 95%; max-width: 1400px; max-height: 85vh; display: flex; flex-direction: column; }
+        .modal-content { background: white; margin: 5% auto; padding: 0; border-radius: 8px; width: 95%; max-width: 95vw; max-height: 85vh; display: flex; flex-direction: column; }
         .modal-header { padding: 20px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center; }
         .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
         .close { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
@@ -87,7 +91,7 @@
         <h1>
             <span>📊 Token 统计日志</span>
             <div class="nav-links" style="display: flex; align-items: center; gap: 15px;">
-                <a href="https://github.com/kehuai007/switchai" target="_blank" style="font-size: 12px; color: #667eea; text-decoration: none;">v1.1.4</a>
+                <a href="https://github.com/kehuai007/switchai" target="_blank" style="font-size: 12px; color: #667eea; text-decoration: none;">v1.1.5</a>
                 <a href="/">← 返回首页</a>
             </div>
         </h1>
@@ -111,8 +115,16 @@
                     <div class="stat-value" id="totalTokens">0</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">总花费</div>
-                    <div class="stat-value" id="totalCost">$0.00</div>
+                    <div class="stat-label">缓存读 Token</div>
+                    <div class="stat-value" id="totalCacheRead">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">缓存写 Token</div>
+                    <div class="stat-value" id="totalCacheWrite">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">缓存命中率</div>
+                    <div class="stat-value" id="totalCacheHitRate">0%</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">总请求数</div>
@@ -128,10 +140,21 @@
 
         <div class="card">
             <h2 style="margin-bottom: 15px;">最近请求记录</h2>
+            <div class="filters">
+                <select id="filterUserModel"><option value="">全部用户模型</option></select>
+                <select id="filterModel"><option value="">全部上游模型</option></select>
+                <select id="filterProvider"><option value="">全部供应商</option></select>
+                <select id="filterKey"><option value="">全部 Key</option></select>
+                <select id="filterClientIP"><option value="">全部 IP</option></select>
+                <input type="text" id="filterRequestId" placeholder="请求ID（支持前缀）" title="支持短 ID 或完整 request_id">
+                <button class="btn-primary" onclick="clearHistoryFilters()">清除筛选</button>
+            </div>
+            <div class="table-scroll">
             <table class="records-table">
                 <thead>
                     <tr>
                         <th>时间</th>
+                        <th>请求ID</th>
                         <th>IP</th>
                         <th>Key</th>
                         <th>供应商</th>
@@ -141,14 +164,17 @@
                         <th>重试</th>
                         <th>输入Token</th>
                         <th>输出Token</th>
+                        <th>缓存读</th>
+                        <th>缓存写</th>
+                        <th>命中率</th>
                         <th>总Token</th>
-                        <th>花费</th>
                         <th>耗时</th>
                         <th>日志</th>
                     </tr>
                 </thead>
                 <tbody id="recordsTable"></tbody>
             </table>
+            </div>
             <div class="pagination" id="recordsPagination"></div>
         </div>
     </div>
@@ -175,6 +201,14 @@
         let totalRecords = 0;
         let serverKeys = {}; // key_id -> key info
         let currentDetailRecord = null; // 当前详情弹窗里的 record，供下载按钮使用
+        const historyFilters = { request_id: '', user_model: '', model: '', provider: '', key_id: '', client_ip: '' };
+        const filterSelects = [
+            ['filterUserModel', 'user_model', '全部用户模型', false],
+            ['filterModel', 'model', '全部上游模型', false],
+            ['filterProvider', 'provider', '全部供应商', false],
+            ['filterKey', 'key_id', '全部 Key', true],
+            ['filterClientIP', 'client_ip', '全部 IP', false],
+        ];
 
         async function loadServerKeys() {
             try {
@@ -194,6 +228,105 @@
             if (!keyId) return '-';
             const key = serverKeys[keyId];
             return key ? (key.remark || '未备注') : keyId.substring(0, 8) + '...';
+        }
+
+        function shortId(id) {
+            return id ? String(id).replace(/-/g, '').slice(0, 8) : '-';
+        }
+
+        function copyText(text) {
+            if (!text) return;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(String(text)).catch(() => {});
+            }
+        }
+
+        function headerValue(headers, name) {
+            if (!headers || typeof headers !== 'object') return '';
+            const lower = name.toLowerCase();
+            for (const [k, v] of Object.entries(headers)) {
+                if (k.toLowerCase() === lower) {
+                    return Array.isArray(v) ? v.join(', ') : String(v);
+                }
+            }
+            return '';
+        }
+
+        function cacheHitRate(inputTokens, cacheRead, cacheWrite) {
+            const total = (inputTokens || 0) + (cacheRead || 0) + (cacheWrite || 0);
+            return total > 0 ? (cacheRead || 0) / total : 0;
+        }
+
+        function formatPercent(rate) {
+            return ((rate || 0) * 100).toFixed(1) + '%';
+        }
+
+        function fillFilterSelect(id, values, placeholder, isKey) {
+            const select = document.getElementById(id);
+            select.innerHTML = '';
+            const all = document.createElement('option');
+            all.value = '';
+            all.textContent = placeholder;
+            select.appendChild(all);
+            values.forEach(v => {
+                const option = document.createElement('option');
+                option.value = v;
+                option.textContent = isKey ? `${getKeyRemark(v)} (${v.substring(0, 8)}…)` : v;
+                select.appendChild(option);
+            });
+        }
+
+        async function loadFilterOptions() {
+            try {
+                const res = await fetch('/api/history-filter-options');
+                const data = await res.json();
+                const mapping = {
+                    user_model: data.user_models || [],
+                    model: data.models || [],
+                    provider: data.providers || [],
+                    key_id: data.key_ids || [],
+                    client_ip: data.client_ips || [],
+                };
+                filterSelects.forEach(([id, key, placeholder, isKey]) => {
+                    fillFilterSelect(id, mapping[key], placeholder, isKey);
+                    document.getElementById(id).value = historyFilters[key] || '';
+                });
+            } catch (err) {
+                console.error('Failed to load history filter options:', err);
+            }
+        }
+
+        function onHistoryFilterChange() {
+            filterSelects.forEach(([id, key]) => {
+                historyFilters[key] = document.getElementById(id).value;
+            });
+            historyFilters.request_id = document.getElementById('filterRequestId').value.trim();
+            loadHistory(1);
+        }
+
+        function clearHistoryFilters() {
+            filterSelects.forEach(([id, key]) => {
+                historyFilters[key] = '';
+                document.getElementById(id).value = '';
+            });
+            historyFilters.request_id = '';
+            document.getElementById('filterRequestId').value = '';
+            loadHistory(1);
+        }
+
+        function recordMatchesFilters(record) {
+            if (historyFilters.request_id) {
+                // 表格展示的是去横线短 ID，因此按前缀匹配；完整 UUID 同样适用。
+                if (!String(record.id || '').startsWith(historyFilters.request_id)) {
+                    return false;
+                }
+            }
+            for (const [id, key] of filterSelects) {
+                if (historyFilters[key] && (record[key] || '') !== historyFilters[key]) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         function showKeyDetail(keyId) {
@@ -243,8 +376,18 @@
                                 </div>
                                 <div class="token-divider"></div>
                                 <div class="token-item">
-                                    <div class="token-label">总Token</div>
-                                    <div class="token-value">${formatToken(stat.total_tokens || 0)}</div>
+                                    <div class="token-label">缓存读</div>
+                                    <div class="token-value">${formatToken(stat.cache_read_tokens || 0)}</div>
+                                </div>
+                                <div class="token-divider"></div>
+                                <div class="token-item">
+                                    <div class="token-label">缓存写</div>
+                                    <div class="token-value">${formatToken(stat.cache_write_tokens || 0)}</div>
+                                </div>
+                                <div class="token-divider"></div>
+                                <div class="token-item">
+                                    <div class="token-label">缓存命中率</div>
+                                    <div class="token-value">${formatPercent(stat.cache_hit_rate || cacheHitRate(stat.input_tokens, stat.cache_read_tokens, stat.cache_write_tokens))}</div>
                                 </div>
                                 <div class="token-divider"></div>
                                 <div class="token-item">
@@ -338,10 +481,6 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        function formatCost(cost) {
-            return '$' + cost.toFixed(6);
-        }
-
         function formatToken(num) {
             if (num >= 1024 * 1024) {
                 return (num / (1024 * 1024)).toFixed(2) + 'M';
@@ -360,7 +499,11 @@
 
         async function loadHistory(page = 1) {
             try {
-                const res = await fetch(`/api/history?page=${page}&page_size=${pageSize}`);
+                const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+                Object.entries(historyFilters).forEach(([key, value]) => {
+                    if (value) params.set(key, value);
+                });
+                const res = await fetch(`/api/history?${params.toString()}`);
                 const data = await res.json();
                 currentPage = page;
                 totalRecords = data.total;
@@ -377,6 +520,7 @@
                 recordsTable.innerHTML = records.map(record => `
                     <tr>
                         <td>${formatTime(record.timestamp)}</td>
+                        <td style="color: #999; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; cursor: pointer;" title="点击复制 ${record.id}" onclick="copyText('${record.id}')">${shortId(record.id)}</td>
                         <td>${record.client_ip || '-'}</td>
                         <td><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${getKeyRemark(record.key_id)}</span></td>
                         <td>${record.provider || '-'}</td>
@@ -386,14 +530,16 @@
                         <td>${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</td>
                         <td>${formatToken(record.input_tokens || 0)}</td>
                         <td>${formatToken(record.output_tokens || 0)}</td>
+                        <td>${formatToken(record.cache_read_tokens || 0)}</td>
+                        <td>${formatToken(record.cache_write_tokens || 0)}</td>
+                        <td>${formatPercent(cacheHitRate(record.input_tokens, record.cache_read_tokens, record.cache_write_tokens))}</td>
                         <td>${formatToken(record.total_tokens || 0)}</td>
-                        <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
                         <td>${formatDuration(record.duration_ms)}</td>
                         <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
                     </tr>
                 `).join('');
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="14" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr data-empty><td colspan="17" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -433,6 +579,14 @@
                             <div class="detail-item">
                                 <div class="detail-label">请求时间</div>
                                 <div class="detail-value">${formatTime(record.timestamp)}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">请求ID</div>
+                                <div class="detail-value" style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; cursor: pointer;" title="点击复制" onclick="copyText('${record.id}')">${record.id || '-'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">上游请求ID</div>
+                                <div class="detail-value" style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;">${headerValue(record.response_headers, 'x-request-id') || '-'}</div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Key</div>
@@ -499,13 +653,23 @@
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
-                                <div class="token-label">总 Token</div>
-                                <div class="token-value">${formatToken(record.total_tokens || 0)}</div>
+                                <div class="token-label">缓存读</div>
+                                <div class="token-value">${formatToken(record.cache_read_tokens || 0)}</div>
                             </div>
                             <div class="token-divider"></div>
                             <div class="token-item">
-                                <div class="token-label">花费</div>
-                                <div class="token-value cost">${record.cost ? formatCost(record.cost) : '-'}</div>
+                                <div class="token-label">缓存写</div>
+                                <div class="token-value">${formatToken(record.cache_write_tokens || 0)}</div>
+                            </div>
+                            <div class="token-divider"></div>
+                            <div class="token-item">
+                                <div class="token-label">缓存命中率</div>
+                                <div class="token-value">${formatPercent(cacheHitRate(record.input_tokens, record.cache_read_tokens, record.cache_write_tokens))}</div>
+                            </div>
+                            <div class="token-divider"></div>
+                            <div class="token-item">
+                                <div class="token-label">总 Token</div>
+                                <div class="token-value">${formatToken(record.total_tokens || 0)}</div>
                             </div>
                         </div>
                     </div>
@@ -567,7 +731,8 @@
             lines.push('[基本信息]');
             lines.push(sub);
             lines.push(`请求时间:  ${formatTimeText(r.timestamp)}`);
-            lines.push(`记录ID:    ${r.id || '-'}`);
+            lines.push(`请求ID:    ${r.id || '-'}`);
+            lines.push(`上游请求ID: ${headerValue(r.response_headers, 'x-request-id') || '-'}`);
             lines.push(`Key:       ${getKeyRemark(r.key_id)} (id=${r.key_id || '-'})`);
             lines.push(`客户端IP:  ${r.client_ip || '-'}`);
             lines.push(`请求方法:  ${r.method || '-'}`);
@@ -585,8 +750,10 @@
             lines.push(sub);
             lines.push(`输入 Token:  ${r.input_tokens || 0}`);
             lines.push(`输出 Token:  ${r.output_tokens || 0}`);
+            lines.push(`缓存读:      ${r.cache_read_tokens || 0}`);
+            lines.push(`缓存写:      ${r.cache_write_tokens || 0}`);
+            lines.push(`缓存命中率:  ${formatPercent(cacheHitRate(r.input_tokens, r.cache_read_tokens, r.cache_write_tokens))}`);
             lines.push(`总 Token:    ${r.total_tokens || 0}`);
-            lines.push(`花费:        ${r.cost ? formatCost(r.cost) : '-'}`);
             lines.push('');
             lines.push('[请求体]');
             lines.push(sub);
@@ -701,7 +868,9 @@
             document.getElementById('totalInput').textContent = formatToken(data.total_input_tokens || 0);
             document.getElementById('totalOutput').textContent = formatToken(data.total_output_tokens || 0);
             document.getElementById('totalTokens').textContent = formatToken(data.total_tokens || 0);
-            document.getElementById('totalCost').textContent = formatCost(data.total_cost || 0);
+            document.getElementById('totalCacheRead').textContent = formatToken(data.total_cache_read_tokens || 0);
+            document.getElementById('totalCacheWrite').textContent = formatToken(data.total_cache_write_tokens || 0);
+            document.getElementById('totalCacheHitRate').textContent = formatPercent(data.cache_hit_rate || cacheHitRate(data.total_input_tokens, data.total_cache_read_tokens, data.total_cache_write_tokens));
             document.getElementById('totalRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
 
             // 更新供应商统计
@@ -723,16 +892,24 @@
                                 <div class="provider-stat-value">${formatToken(provider.output_tokens)}</div>
                             </div>
                             <div class="provider-stat-item">
+                                <div class="provider-stat-label">缓存读</div>
+                                <div class="provider-stat-value">${formatToken(provider.cache_read_tokens || 0)}</div>
+                            </div>
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">缓存写</div>
+                                <div class="provider-stat-value">${formatToken(provider.cache_write_tokens || 0)}</div>
+                            </div>
+                            <div class="provider-stat-item">
+                                <div class="provider-stat-label">缓存命中率</div>
+                                <div class="provider-stat-value">${formatPercent(provider.cache_hit_rate || cacheHitRate(provider.input_tokens, provider.cache_read_tokens, provider.cache_write_tokens))}</div>
+                            </div>
+                            <div class="provider-stat-item">
                                 <div class="provider-stat-label">总Token</div>
                                 <div class="provider-stat-value">${formatToken(provider.total_tokens)}</div>
                             </div>
                             <div class="provider-stat-item">
                                 <div class="provider-stat-label">请求次数</div>
                                 <div class="provider-stat-value">${provider.request_count}</div>
-                            </div>
-                            <div class="provider-stat-item">
-                                <div class="provider-stat-label">总花费</div>
-                                <div class="provider-stat-value cost">${formatCost(provider.total_cost)}</div>
                             </div>
                         </div>
                     </div>
@@ -746,7 +923,7 @@
             if (data.recent_records && data.recent_records.length > 0) {
                 // Don't update table here, use loadHistory instead
             } else {
-                recordsTable.innerHTML = '<tr><td colspan="14" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
+                recordsTable.innerHTML = '<tr data-empty><td colspan="17" style="text-align: center; color: #999; padding: 20px;">暂无记录</td></tr>';
             }
         }
 
@@ -762,16 +939,20 @@
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 if (data.type === 'history') {
+                    // 有筛选条件时，以 HTTP /api/history 查询结果为准，忽略 WS 的未筛选初始推送
+                    if (Object.values(historyFilters).some(v => v)) return;
                     // 初始加载历史记录
                     currentPage = 1;
                     totalRecords = data.total || data.records?.length || 0;
                     updateHistoryTable(data.records);
                     updatePagination();
                 } else if (data.id) {
-                    // 单条新记录，直接插入到表格顶部
-                    prependRecord(data);
-                    totalRecords++;
-                    updatePagination();
+                    // 单条新记录：只有命中当前筛选条件才计入并插入表格
+                    if (recordMatchesFilters(data)) {
+                        totalRecords++;
+                        prependRecord(data);
+                        updatePagination();
+                    }
                 }
             };
 
@@ -814,8 +995,10 @@
             };
         }
 
-        // 将新记录插入到表格顶部
+        // 将新记录插入到表格顶部（仅在首页且命中筛选条件时）
         function prependRecord(record) {
+            if (currentPage !== 1 || !recordMatchesFilters(record)) return;
+
             const recordsTable = document.getElementById('recordsTable');
             const emptyMsg = recordsTable.querySelector('tr[data-empty]');
             if (emptyMsg) {
@@ -825,6 +1008,7 @@
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${formatTime(record.timestamp)}</td>
+                <td style="color: #999; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; cursor: pointer;" title="点击复制 ${record.id}" onclick="copyText('${record.id}')">${shortId(record.id)}</td>
                 <td>${record.client_ip || '-'}</td>
                 <td><span class="log-link" onclick="showKeyDetail('${record.key_id}')">${getKeyRemark(record.key_id)}</span></td>
                 <td>${record.provider || '-'}</td>
@@ -834,15 +1018,17 @@
                 <td>${record.retry_count > 0 ? `<span class="badge badge-retry">${record.retry_count}</span>` : '0'}</td>
                 <td>${formatToken(record.input_tokens || 0)}</td>
                 <td>${formatToken(record.output_tokens || 0)}</td>
+                <td>${formatToken(record.cache_read_tokens || 0)}</td>
+                <td>${formatToken(record.cache_write_tokens || 0)}</td>
+                <td>${formatPercent(cacheHitRate(record.input_tokens, record.cache_read_tokens, record.cache_write_tokens))}</td>
                 <td>${formatToken(record.total_tokens || 0)}</td>
-                <td class="cost">${record.cost ? formatCost(record.cost) : '-'}</td>
                 <td>${formatDuration(record.duration_ms)}</td>
                 <td><span class="log-link" onclick="showDetail('${record.id}')">查看</span></td>
             `;
             recordsTable.insertBefore(tr, recordsTable.firstChild);
 
             // 保持表格最多显示 pageSize 条（第一页时）
-            if (currentPage === 1 && recordsTable.children.length > pageSize) {
+            if (recordsTable.children.length > pageSize) {
                 recordsTable.removeChild(recordsTable.lastChild);
             }
         }
@@ -885,7 +1071,19 @@
 
         // 初始加载
         (async () => {
+            filterSelects.forEach(([id]) => {
+                document.getElementById(id).addEventListener('change', onHistoryFilterChange);
+            });
+            const requestIdInput = document.getElementById('filterRequestId');
+            requestIdInput.addEventListener('change', onHistoryFilterChange);
+            requestIdInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    onHistoryFilterChange();
+                }
+            });
             await loadServerKeys();
+            await loadFilterOptions();
             await loadStats();
             await loadHistory();
             connectWebSocket();

@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	model TEXT,
 	input_tokens INTEGER,
 	output_tokens INTEGER,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER,
 	cost REAL,
 	duration_ms INTEGER,
@@ -63,6 +65,8 @@ CREATE TABLE IF NOT EXISTS provider_stats (
 	provider_name TEXT,
 	input_tokens INTEGER DEFAULT 0,
 	output_tokens INTEGER DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER DEFAULT 0,
 	total_cost REAL DEFAULT 0,
 	request_count INTEGER DEFAULT 0
@@ -71,6 +75,8 @@ CREATE TABLE IF NOT EXISTS key_stats (
 	key_id TEXT PRIMARY KEY,
 	input_tokens INTEGER DEFAULT 0,
 	output_tokens INTEGER DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER DEFAULT 0,
 	total_cost REAL DEFAULT 0,
 	ip_addresses TEXT DEFAULT '[]',
@@ -82,6 +88,8 @@ CREATE TABLE IF NOT EXISTS key_daily_stats (
 	request_count INTEGER DEFAULT 0,
 	input_tokens INTEGER DEFAULT 0,
 	output_tokens INTEGER DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost REAL DEFAULT 0,
 	PRIMARY KEY (key_id, date)
 );
@@ -91,6 +99,8 @@ CREATE TABLE IF NOT EXISTS provider_token_history (
 	t_bucket      INTEGER NOT NULL,
 	input_tokens  INTEGER NOT NULL DEFAULT 0,
 	output_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens  INTEGER NOT NULL DEFAULT 0,
 	request_count INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(provider_id, t_bucket)
@@ -109,8 +119,9 @@ CREATE TABLE IF NOT EXISTS provider_token_history (
 // reader and we'd see len(points) == 0.
 //
 // Reference: stats.go:482 — tb := time.Now().UnixNano() / 1e10 * 10
-//            quota/quota_history.go:QueryTokenHistory — SELECT
-//            provider_token_history WHERE t_bucket BETWEEN ? AND ?
+//
+//	quota/quota_history.go:QueryTokenHistory — SELECT
+//	provider_token_history WHERE t_bucket BETWEEN ? AND ?
 func TestQueryTokenHistory_FindsStatsWriteAtProductionScale(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "stats.db")
@@ -148,8 +159,7 @@ func TestQueryTokenHistory_FindsStatsWriteAtProductionScale(t *testing.T) {
 	// Write through the REAL production writer — exact signature and
 	// arguments from the user's spec for this integration test.
 	const pid = "test-prov-bridge"
-	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat",
-		100, 50, 0.01, 200, 100, "k1", "1.2.3.4")
+	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat", 100, 50, 0, 0, 200, 100, "k1", "1.2.3.4")
 
 	// Sanity check: the writer actually committed a row into
 	// provider_token_history. If this fails, the integration test

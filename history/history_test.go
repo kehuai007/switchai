@@ -170,7 +170,7 @@ func TestAddRecord_PersistsRetryCount(t *testing.T) {
 		t.Errorf("GetRecord.RetryCount = %d, want 2", got.RetryCount)
 	}
 
-	summaries, _ := GetRecordsSummary(1, 20)
+	summaries, _ := GetRecordsSummary(1, 20, RecordFilters{})
 	found := false
 	for _, s := range summaries {
 		if s.ID == id {
@@ -182,5 +182,32 @@ func TestAddRecord_PersistsRetryCount(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("record %s not in summary", id)
+	}
+}
+
+// TestGetRecordsSummary_FilterByRequestIDPrefix 守护日志页的请求ID筛选：
+// 支持表格展示的去横线短 ID 和完整 UUID 前缀。
+func TestGetRecordsSummary_FilterByRequestIDPrefix(t *testing.T) {
+	resetForTest(t)
+	if err := Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(Shutdown)
+
+	firstID := "abcdef12-1111-2222-3333-444455556666"
+	secondID := "ffffffff-1111-2222-3333-444455556666"
+	AddRecord(RequestRecord{ID: firstID, Timestamp: time.Now(), Method: "POST", Path: "/v1/messages", StatusCode: 200})
+	AddRecord(RequestRecord{ID: secondID, Timestamp: time.Now(), Method: "POST", Path: "/v1/messages", StatusCode: 200})
+
+	// 表格展示的格式：去掉横线的前 8 位
+	summaries, total := GetRecordsSummary(1, 20, RecordFilters{RequestID: "abcdef12"})
+	if total != 1 || len(summaries) != 1 || summaries[0].ID != firstID {
+		t.Fatalf("prefix filter: total=%d records=%+v, want only %s", total, summaries, firstID)
+	}
+
+	// 完整 UUID（带横线）同样按前缀命中
+	summaries, total = GetRecordsSummary(1, 20, RecordFilters{RequestID: firstID})
+	if total != 1 || len(summaries) != 1 || summaries[0].ID != firstID {
+		t.Fatalf("full id filter: total=%d records=%+v, want only %s", total, summaries, firstID)
 	}
 }

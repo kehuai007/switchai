@@ -227,6 +227,65 @@ func TestDoRequestWithRetry_MaxTokensFallback(t *testing.T) {
 	}
 }
 
+func TestIsReasoningToolsConflict(t *testing.T) {
+	body := []byte(`{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."}}`)
+	if !IsReasoningToolsConflict(http.StatusBadRequest, body) {
+		t.Error("expected reasoning/tools conflict to be detected")
+	}
+	if IsReasoningToolsConflict(http.StatusOK, body) {
+		t.Error("200 should not be detected")
+	}
+	if IsReasoningToolsConflict(http.StatusBadRequest, []byte(`{"error":"model not found"}`)) {
+		t.Error("unrelated 400 should not be detected")
+	}
+}
+
+func TestRewriteReasoningEffortNone(t *testing.T) {
+	openaiBody := []byte(`{"model":"gpt-6","reasoning_effort":"high","tools":[{"type":"function","function":{"name":"x"}}]}`)
+	patched, ok := RewriteReasoningEffortNone(openaiBody)
+	if !ok {
+		t.Fatal("expected OpenAI rewrite")
+	}
+	var o map[string]interface{}
+	json.Unmarshal(patched, &o)
+	if asString(o["reasoning_effort"]) != "none" {
+		t.Errorf("reasoning_effort = %v, want none", o["reasoning_effort"])
+	}
+
+	claudeBody := []byte(`{"model":"gpt-6","output_config":{"effort":"high"},"tools":[{"name":"x"}]}`)
+	patched, ok = RewriteReasoningEffortNone(claudeBody)
+	if !ok {
+		t.Fatal("expected Anthropic rewrite")
+	}
+	var c map[string]interface{}
+	json.Unmarshal(patched, &c)
+	if asString(asMap(c["output_config"])["effort"]) != "none" {
+		t.Errorf("output_config = %#v, want effort none", c["output_config"])
+	}
+
+	// 已经是 none 时，第二级改为关闭 thinking
+	alreadyNone := []byte(`{"model":"gpt-6","output_config":{"effort":"none"},"thinking":{"type":"adaptive"},"tools":[{"name":"x"}]}`)
+	patched, ok = RewriteReasoningEffortNone(alreadyNone)
+	if !ok {
+		t.Fatal("expected thinking fallback")
+	}
+	var n map[string]interface{}
+	json.Unmarshal(patched, &n)
+	if asString(asMap(n["thinking"])["type"]) != "disabled" {
+		t.Errorf("thinking = %#v, want disabled", n["thinking"])
+	}
+
+	if _, ok := RewriteReasoningEffortNone([]byte(`{"model":"gpt-6","reasoning_effort":"high"}`)); ok {
+		t.Error("body without tools must not be rewritten")
+	}
+
+	if _, ok := RewriteReasoningEffortNone([]byte(`{
+		"model":"gpt-6.1-sol","reasoning_effort":"high","tools":[{"type":"function"}]
+	}`)); ok {
+		t.Error("gpt-6.1 must not be retried with reasoning_effort=none")
+	}
+}
+
 // TestDoRequestWithRetry_MaxCompletionTokensFallback 验证旧 OpenAI 兼容服务
 // 拒收 max_completion_tokens 时，自动降级为 max_tokens 并成功。
 func TestDoRequestWithRetry_MaxCompletionTokensFallback(t *testing.T) {
@@ -265,5 +324,43 @@ func TestDoRequestWithRetry_MaxCompletionTokensFallback(t *testing.T) {
 	}
 	if !strings.Contains(secondBody, `"max_tokens":256`) {
 		t.Errorf("retry body missing max_tokens: %s", secondBody)
+	}
+}
+
+// TestDoRequestWithRetry_ReasoningToolsFallback 验证上游拒绝
+// function tools + reasoning_effort 后，自动把 reasoning_effort 改成 none 重试。
+func TestDoRequestWithRetry_ReasoningToolsFallback(t *testing.T) {
+	var hits int32
+	var secondBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&hits, 1)
+		b, _ := io.ReadAll(r.Body)
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."}}`)
+			return
+		}
+		secondBody = string(b)
+		w.WriteHeader(200)
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+
+	body := []byte(`{"model":"gpt-6-sol","reasoning_effort":"high","tools":[{"type":"function","function":{"name":"get_time"}}],"messages":[]}`)
+	req, _ := http.NewRequest("POST", srv.URL, bytes.NewReader(body))
+	resp, finalAttempt, err := doRequestWithRetry(req, body, nil, 3)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if finalAttempt != 2 {
+		t.Errorf("finalAttempt = %d, want 2 (one reasoning retry)", finalAttempt)
+	}
+	if !strings.Contains(secondBody, `"reasoning_effort":"none"`) {
+		t.Errorf("retry body missing reasoning_effort=none: %s", secondBody)
 	}
 }

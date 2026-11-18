@@ -20,49 +20,76 @@ import (
 )
 
 type UsageRecord struct {
-	ProviderID   string    `json:"provider_id"`
-	ProviderName string    `json:"provider_name"`
-	Model        string    `json:"model"`
-	UserModel    string    `json:"user_model"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	TotalTokens  int       `json:"total_tokens"`
-	Cost         float64   `json:"cost"`
-	Duration     int64     `json:"duration_ms"`
-	TimeToFirst  int64     `json:"time_to_first_ms"`
-	Timestamp    time.Time `json:"timestamp"`
-	Group        string    `json:"group"`
-	Type         string    `json:"type"`
+	ProviderID       string    `json:"provider_id"`
+	ProviderName     string    `json:"provider_name"`
+	Model            string    `json:"model"`
+	UserModel        string    `json:"user_model"`
+	InputTokens      int       `json:"input_tokens"`
+	OutputTokens     int       `json:"output_tokens"`
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	TotalTokens      int       `json:"total_tokens"`
+	Duration         int64     `json:"duration_ms"`
+	TimeToFirst      int64     `json:"time_to_first_ms"`
+	Timestamp        time.Time `json:"timestamp"`
+	Group            string    `json:"group"`
+	Type             string    `json:"type"`
+	KeyID            string    `json:"key_id"`
+	ClientIP         string    `json:"client_ip"`
 }
 
 type ProviderStats struct {
-	ProviderID   string  `json:"provider_id"`
-	ProviderName string  `json:"provider_name"`
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
-	TotalTokens  int     `json:"total_tokens"`
-	TotalCost    float64 `json:"total_cost"`
-	RequestCount int     `json:"request_count"`
+	ProviderID       string  `json:"provider_id"`
+	ProviderName     string  `json:"provider_name"`
+	InputTokens      int     `json:"input_tokens"`
+	OutputTokens     int     `json:"output_tokens"`
+	CacheReadTokens  int     `json:"cache_read_tokens"`
+	CacheWriteTokens int     `json:"cache_write_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	CacheHitRate     float64 `json:"cache_hit_rate"`
+	RequestCount     int     `json:"request_count"`
 }
 
 type KeyStats struct {
-	KeyID         string   `json:"key_id"`
-	InputTokens   int      `json:"input_tokens"`
-	OutputTokens  int      `json:"output_tokens"`
-	TotalTokens   int      `json:"total_tokens"`
-	TotalCost     float64  `json:"total_cost"`
-	IPAddresses   []string `json:"ip_addresses"`
-	RequestCount  int      `json:"request_count"`
-	TodayReqCount int      `json:"today_req_count"`
-	TodayCost     float64  `json:"today_cost"`
+	KeyID                 string   `json:"key_id"`
+	InputTokens           int      `json:"input_tokens"`
+	OutputTokens          int      `json:"output_tokens"`
+	CacheReadTokens       int      `json:"cache_read_tokens"`
+	CacheWriteTokens      int      `json:"cache_write_tokens"`
+	TotalTokens           int      `json:"total_tokens"`
+	CacheHitRate          float64  `json:"cache_hit_rate"`
+	IPAddresses           []string `json:"ip_addresses"`
+	RequestCount          int      `json:"request_count"`
+	TodayReqCount         int      `json:"today_req_count"`
+	TodayInputTokens      int      `json:"today_input_tokens"`
+	TodayOutputTokens     int      `json:"today_output_tokens"`
+	TodayCacheReadTokens  int      `json:"today_cache_read_tokens"`
+	TodayCacheWriteTokens int      `json:"today_cache_write_tokens"`
+	TodayCacheHitRate     float64  `json:"today_cache_hit_rate"`
 }
 
 type TimeBucket struct {
-	T            time.Time `json:"t"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	RequestCount int       `json:"request_count"`
-	Cost         float64   `json:"cost"`
+	T                time.Time `json:"t"`
+	InputTokens      int       `json:"input_tokens"`
+	OutputTokens     int       `json:"output_tokens"`
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	RequestCount     int       `json:"request_count"`
+	CacheHitRate     float64   `json:"cache_hit_rate"`
+}
+
+// cacheHitRate 统一按“缓存读 / 总输入”计算。OpenAI 的 cached_tokens 在代理层
+// 已归一化为独立的 cache_read，input 不再包含缓存部分。
+func cacheHitRate(inputTokens, cacheRead, cacheWrite int) float64 {
+	total := inputTokens + cacheRead + cacheWrite
+	if total <= 0 {
+		return 0
+	}
+	return float64(cacheRead) / float64(total)
+}
+
+func totalTokenCount(inputTokens, outputTokens, cacheRead, cacheWrite int) int {
+	return inputTokens + outputTokens + cacheRead + cacheWrite
 }
 
 type TodayStats struct {
@@ -144,6 +171,8 @@ func initDB() error {
 		model TEXT,
 		input_tokens INTEGER,
 		output_tokens INTEGER,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens INTEGER,
 		cost REAL,
 		duration_ms INTEGER,
@@ -161,6 +190,8 @@ func initDB() error {
 		provider_name TEXT,
 		input_tokens INTEGER DEFAULT 0,
 		output_tokens INTEGER DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens INTEGER DEFAULT 0,
 		total_cost REAL DEFAULT 0,
 		request_count INTEGER DEFAULT 0
@@ -170,6 +201,8 @@ func initDB() error {
 		key_id TEXT PRIMARY KEY,
 		input_tokens INTEGER DEFAULT 0,
 		output_tokens INTEGER DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens INTEGER DEFAULT 0,
 		total_cost REAL DEFAULT 0,
 		ip_addresses TEXT DEFAULT '[]',
@@ -182,6 +215,8 @@ func initDB() error {
 		request_count INTEGER DEFAULT 0,
 		input_tokens INTEGER DEFAULT 0,
 		output_tokens INTEGER DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_cost REAL DEFAULT 0,
 		PRIMARY KEY (key_id, date)
 	);
@@ -198,6 +233,8 @@ func initDB() error {
 		t_bucket      INTEGER NOT NULL,
 		input_tokens  INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens  INTEGER NOT NULL DEFAULT 0,
 		request_count INTEGER NOT NULL DEFAULT 0,
 		UNIQUE(provider_id, t_bucket)
@@ -214,6 +251,21 @@ func initDB() error {
 	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE key_daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE usage_records ADD COLUMN user_model TEXT DEFAULT ''`)
+	migrations := []string{
+		`ALTER TABLE usage_records ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE usage_records ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE provider_stats ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE provider_stats ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE key_stats ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE key_stats ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE key_daily_stats ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE key_daily_stats ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE provider_token_history ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE provider_token_history ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, migration := range migrations {
+		db.Exec(migration)
+	}
 	return nil
 }
 
@@ -243,14 +295,16 @@ func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 			var b TimeBucket
 			err := db.QueryRow(`
 				SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-				       COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0)
+				       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0),
+				       COALESCE(SUM(request_count), 0)
 				FROM key_daily_stats
 				WHERE date = ? AND key_id = ?`,
 				d.Format("2006-01-02"), keyID).
-				Scan(&b.InputTokens, &b.OutputTokens, &b.RequestCount, &b.Cost)
+				Scan(&b.InputTokens, &b.OutputTokens, &b.CacheReadTokens, &b.CacheWriteTokens, &b.RequestCount)
 			if err != nil && err != sql.ErrNoRows {
 				return nil, err
 			}
+			b.CacheHitRate = cacheHitRate(b.InputTokens, b.CacheReadTokens, b.CacheWriteTokens)
 			b.T = d
 			buckets[i] = b
 		}
@@ -271,7 +325,8 @@ func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 		SELECT ((timestamp - ?) / ?) * ? + ? AS t,
 		       COALESCE(SUM(input_tokens), 0),
 		       COALESCE(SUM(output_tokens), 0),
-		       COALESCE(SUM(cost), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(cache_write_tokens), 0),
 		       COUNT(*)
 		FROM usage_records
 		WHERE key_id = ? AND timestamp >= ?
@@ -291,9 +346,10 @@ func GetKeyTodayBuckets(keyID, bucket string) (*TodayStats, error) {
 	for rows.Next() {
 		var t int64
 		var b TimeBucket
-		if err := rows.Scan(&t, &b.InputTokens, &b.OutputTokens, &b.Cost, &b.RequestCount); err != nil {
+		if err := rows.Scan(&t, &b.InputTokens, &b.OutputTokens, &b.CacheReadTokens, &b.CacheWriteTokens, &b.RequestCount); err != nil {
 			return nil, err
 		}
+		b.CacheHitRate = cacheHitRate(b.InputTokens, b.CacheReadTokens, b.CacheWriteTokens)
 		b.T = time.Unix(0, t).In(now.Location())
 		raw[t] = b
 	}
@@ -345,8 +401,8 @@ func (s *Stats) handleBroadcast() {
 			s.writeToAllClients(s.GetSummary())
 			// 同时广播单条记录给 history WebSocket 客户端
 			history.BroadcastRecord(record.ProviderID, record.ProviderName, record.Model, record.UserModel,
-				record.InputTokens, record.OutputTokens, record.Cost, record.Duration,
-				record.Timestamp, "", "")
+				record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.CacheWriteTokens,
+				record.Duration, record.Timestamp, record.KeyID, record.ClientIP)
 		case <-pushTicker.C:
 			// 空闲也定时推：额度重置等 quota 变化不再依赖 usage 事件。
 			// 无客户端时跳过昂贵的 GetSummary（DB 查询）。
@@ -463,10 +519,12 @@ func maskKeyID(keyID string) string {
 	return keyID[:8] + "..."
 }
 
-func RecordUsage(providerID, providerName, model, userModel, group, reqType string, inputTokens, outputTokens int, cost float64, duration, timeToFirst int64, keyID, clientIP string) {
+func RecordUsage(providerID, providerName, model, userModel, group, reqType string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int, duration, timeToFirst int64, keyID, clientIP string) {
 	if db == nil {
 		return
 	}
+
+	totalTokens := totalTokenCount(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -477,11 +535,13 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 
 	// Insert usage record
 	_, err = tx.Exec(`
-		INSERT INTO usage_records (provider_id, provider_name, model, input_tokens, output_tokens, total_tokens,
-			cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name, key_id, client_ip, user_model)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		providerID, providerName, model, inputTokens, outputTokens, inputTokens+outputTokens,
-		cost, duration, timeToFirst, time.Now().UnixNano(), group, reqType, keyID, clientIP, userModel)
+		INSERT INTO usage_records (provider_id, provider_name, model, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, total_tokens,
+			duration_ms, time_to_first_ms, timestamp, group_name, type_name, key_id, client_ip, user_model)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		providerID, providerName, model, inputTokens, outputTokens,
+		cacheReadTokens, cacheWriteTokens, totalTokens,
+		duration, timeToFirst, time.Now().UnixNano(), group, reqType, keyID, clientIP, userModel)
 	if err != nil {
 		logger.Error("Failed to insert usage record: %v", err)
 		return
@@ -504,16 +564,19 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 
 	// Upsert provider_stats
 	_, err = tx.Exec(`
-		INSERT INTO provider_stats (provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count)
-		VALUES (?, ?, ?, ?, ?, ?, 1)
+		INSERT INTO provider_stats (provider_id, provider_name, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, total_tokens, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1)
 		ON CONFLICT(provider_id) DO UPDATE SET
 			provider_name = excluded.provider_name,
 			input_tokens = input_tokens + excluded.input_tokens,
 			output_tokens = output_tokens + excluded.output_tokens,
+			cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+			cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
 			total_tokens = total_tokens + excluded.total_tokens,
-			total_cost = total_cost + excluded.total_cost,
 			request_count = request_count + 1`,
-		providerID, providerName, inputTokens, outputTokens, inputTokens+outputTokens, cost)
+		providerID, providerName, inputTokens, outputTokens,
+		cacheReadTokens, cacheWriteTokens, totalTokens)
 	if err != nil {
 		logger.Error("Failed to upsert provider stats: %v", err)
 		return
@@ -550,16 +613,18 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 
 		ipsJSON, _ := json.Marshal(ips)
 		_, err = tx.Exec(`
-			INSERT INTO key_stats (key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count)
-			VALUES (?, ?, ?, ?, ?, ?, 1)
+			INSERT INTO key_stats (key_id, input_tokens, output_tokens,
+				cache_read_tokens, cache_write_tokens, total_tokens, ip_addresses, request_count)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1)
 			ON CONFLICT(key_id) DO UPDATE SET
 				input_tokens = input_tokens + excluded.input_tokens,
 				output_tokens = output_tokens + excluded.output_tokens,
+				cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+				cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
 				total_tokens = total_tokens + excluded.total_tokens,
-				total_cost = total_cost + excluded.total_cost,
 				ip_addresses = excluded.ip_addresses,
 				request_count = request_count + 1`,
-			keyID, inputTokens, outputTokens, inputTokens+outputTokens, cost, string(ipsJSON))
+			keyID, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens, string(ipsJSON))
 		if err != nil {
 			logger.Error("Failed to upsert key stats: %v", err)
 			return
@@ -568,14 +633,16 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 		// Upsert key_daily_stats
 		today := time.Now().Format("2006-01-02")
 		_, err = tx.Exec(`
-			INSERT INTO key_daily_stats (key_id, date, request_count, input_tokens, output_tokens, total_cost)
-			VALUES (?, ?, 1, ?, ?, ?)
+			INSERT INTO key_daily_stats (key_id, date, request_count, input_tokens, output_tokens,
+				cache_read_tokens, cache_write_tokens)
+			VALUES (?, ?, 1, ?, ?, ?, ?)
 			ON CONFLICT(key_id, date) DO UPDATE SET
 				request_count = request_count + 1,
 				input_tokens = input_tokens + excluded.input_tokens,
 				output_tokens = output_tokens + excluded.output_tokens,
-				total_cost = total_cost + excluded.total_cost`,
-			keyID, today, inputTokens, outputTokens, cost)
+				cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+				cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens`,
+			keyID, today, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
 		if err != nil {
 			logger.Error("Failed to upsert key daily stats: %v", err)
 			return
@@ -585,14 +652,17 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 	// 累加 provider_token_history（10s 桶）
 	tb := time.Now().UnixNano() / 1e10 * 10
 	_, err = tx.Exec(`
-		INSERT INTO provider_token_history (provider_id, t_bucket, input_tokens, output_tokens, total_tokens, request_count)
-		VALUES (?, ?, ?, ?, ?, 1)
+		INSERT INTO provider_token_history (provider_id, t_bucket, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, total_tokens, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1)
 		ON CONFLICT(provider_id, t_bucket) DO UPDATE SET
 			input_tokens  = input_tokens  + excluded.input_tokens,
 			output_tokens = output_tokens + excluded.output_tokens,
+			cache_read_tokens  = cache_read_tokens  + excluded.cache_read_tokens,
+			cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
 			total_tokens  = total_tokens  + excluded.total_tokens,
 			request_count = request_count + 1`,
-		providerID, tb, inputTokens, outputTokens, inputTokens+outputTokens)
+		providerID, tb, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens)
 	if err != nil {
 		logger.Error("Failed to upsert provider_token_history: %v", err)
 		return
@@ -605,32 +675,36 @@ func RecordUsage(providerID, providerName, model, userModel, group, reqType stri
 
 	// Log
 	record := UsageRecord{
-		ProviderID:   providerID,
-		ProviderName: providerName,
-		Model:        model,
-		UserModel:    userModel,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalTokens:  inputTokens + outputTokens,
-		Cost:         cost,
-		Duration:     duration,
-		TimeToFirst:  timeToFirst,
-		Timestamp:    time.Now(),
-		Group:        group,
-		Type:         reqType,
+		ProviderID:       providerID,
+		ProviderName:     providerName,
+		Model:            model,
+		UserModel:        userModel,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
+		TotalTokens:      totalTokens,
+		Duration:         duration,
+		TimeToFirst:      timeToFirst,
+		Timestamp:        time.Now(),
+		Group:            group,
+		Type:             reqType,
+		KeyID:            keyID,
+		ClientIP:         clientIP,
 	}
 
-	logger.Info("📊 Token统计 | 时间: %s | 密钥: %s | 令牌: %d输入/%d输出 | 分组: %s | 类型: %s | 模型: %s | 用时: %dms | 首字: %dms | 花费: $%.6f | IP: %s",
+	logger.Info("📊 Token统计 | 时间: %s | 密钥: %s | 令牌: %d输入/%d输出 缓存读:%d 缓存写:%d | 分组: %s | 类型: %s | 模型: %s | 用时: %dms | 首字: %dms | IP: %s",
 		record.Timestamp.Format("15:04:05"),
 		maskKeyID(keyID),
 		inputTokens,
 		outputTokens,
+		cacheReadTokens,
+		cacheWriteTokens,
 		group,
 		reqType,
 		model,
 		duration,
 		timeToFirst,
-		cost,
 		clientIP,
 	)
 
@@ -648,7 +722,8 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	}
 
 	// Get provider stats
-	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count FROM provider_stats`)
+	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, total_tokens, request_count FROM provider_stats`)
 	if err != nil {
 		logger.Error("Failed to get provider stats: %v", err)
 		return emptySummary()
@@ -658,9 +733,11 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	var providerStatsArray []*ProviderStats
 	for providerRows.Next() {
 		var ps ProviderStats
-		if err := providerRows.Scan(&ps.ProviderID, &ps.ProviderName, &ps.InputTokens, &ps.OutputTokens, &ps.TotalTokens, &ps.TotalCost, &ps.RequestCount); err != nil {
+		if err := providerRows.Scan(&ps.ProviderID, &ps.ProviderName, &ps.InputTokens, &ps.OutputTokens,
+			&ps.CacheReadTokens, &ps.CacheWriteTokens, &ps.TotalTokens, &ps.RequestCount); err != nil {
 			continue
 		}
+		ps.CacheHitRate = cacheHitRate(ps.InputTokens, ps.CacheReadTokens, ps.CacheWriteTokens)
 		providerStatsArray = append(providerStatsArray, &ps)
 	}
 	sort.Slice(providerStatsArray, func(i, j int) bool {
@@ -669,7 +746,11 @@ func (s *Stats) GetSummary() map[string]interface{} {
 
 	// Get key stats
 	today := time.Now().Format("2006-01-02")
-	keyRows, err := db.Query(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens, ks.total_tokens, ks.total_cost, ks.ip_addresses, ks.request_count, COALESCE(kds.request_count, 0) as today_req_count, COALESCE(kds.total_cost, 0.0) as today_cost FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?`, today)
+	keyRows, err := db.Query(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens,
+		ks.cache_read_tokens, ks.cache_write_tokens, ks.total_tokens, ks.ip_addresses, ks.request_count,
+		COALESCE(kds.request_count, 0), COALESCE(kds.input_tokens, 0), COALESCE(kds.output_tokens, 0),
+		COALESCE(kds.cache_read_tokens, 0), COALESCE(kds.cache_write_tokens, 0)
+		FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?`, today)
 	if err != nil {
 		logger.Error("Failed to get key stats: %v", err)
 		return emptySummary()
@@ -680,10 +761,15 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	for keyRows.Next() {
 		var ks KeyStats
 		var ipsJSON string
-		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount, &ks.TodayReqCount, &ks.TodayCost); err != nil {
+		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens,
+			&ks.CacheReadTokens, &ks.CacheWriteTokens, &ks.TotalTokens, &ipsJSON, &ks.RequestCount,
+			&ks.TodayReqCount, &ks.TodayInputTokens, &ks.TodayOutputTokens,
+			&ks.TodayCacheReadTokens, &ks.TodayCacheWriteTokens); err != nil {
 			continue
 		}
 		json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
+		ks.CacheHitRate = cacheHitRate(ks.InputTokens, ks.CacheReadTokens, ks.CacheWriteTokens)
+		ks.TodayCacheHitRate = cacheHitRate(ks.TodayInputTokens, ks.TodayCacheReadTokens, ks.TodayCacheWriteTokens)
 		keyStatsArray = append(keyStatsArray, &ks)
 	}
 	sort.Slice(keyStatsArray, func(i, j int) bool {
@@ -692,15 +778,20 @@ func (s *Stats) GetSummary() map[string]interface{} {
 
 	// Get totals from provider_stats (unbounded aggregates maintained via upsert).
 	// usage_records is capped at 1000 rows so COUNT(*)/SUM on it underreports.
-	var totalInput, totalOutput, totalRequestCount int
-	var totalCost float64
-	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0) FROM provider_stats`).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
+	var totalInput, totalOutput, totalCacheRead, totalCacheWrite, totalRequestCount int
+	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0),
+		COALESCE(SUM(request_count), 0) FROM provider_stats`).Scan(
+		&totalInput, &totalOutput, &totalCacheRead, &totalCacheWrite, &totalRequestCount)
 	if err != nil {
 		logger.Error("Failed to get totals from provider_stats: %v", err)
 	}
 
 	// Get recent records (last 10)
-	recordRows, err := db.Query(`SELECT provider_id, provider_name, model, input_tokens, output_tokens, total_tokens, cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name FROM usage_records ORDER BY timestamp DESC LIMIT 10`)
+	recordRows, err := db.Query(`SELECT provider_id, provider_name, model, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, total_tokens, duration_ms, time_to_first_ms, timestamp, group_name, type_name,
+		COALESCE(key_id, ''), COALESCE(client_ip, '')
+		FROM usage_records ORDER BY timestamp DESC LIMIT 10`)
 	if err != nil {
 		logger.Error("Failed to get recent records: %v", err)
 		return emptySummary()
@@ -711,7 +802,9 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	for recordRows.Next() {
 		var r UsageRecord
 		var timestamp int64
-		if err := recordRows.Scan(&r.ProviderID, &r.ProviderName, &r.Model, &r.InputTokens, &r.OutputTokens, &r.TotalTokens, &r.Cost, &r.Duration, &r.TimeToFirst, &timestamp, &r.Group, &r.Type); err != nil {
+		if err := recordRows.Scan(&r.ProviderID, &r.ProviderName, &r.Model, &r.InputTokens, &r.OutputTokens,
+			&r.CacheReadTokens, &r.CacheWriteTokens, &r.TotalTokens, &r.Duration, &r.TimeToFirst,
+			&timestamp, &r.Group, &r.Type, &r.KeyID, &r.ClientIP); err != nil {
 			continue
 		}
 		r.Timestamp = time.Unix(0, timestamp)
@@ -719,15 +812,17 @@ func (s *Stats) GetSummary() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_input_tokens":   totalInput,
-		"total_output_tokens":  totalOutput,
-		"total_tokens":         totalInput + totalOutput,
-		"total_cost":           totalCost,
-		"total_request_count":  totalRequestCount,
-		"provider_stats":       providerStatsArray,
-		"key_stats":            keyStatsArray,
-		"recent_records":       recentRecords,
-		"provider_quotas":      quota.Snapshots(),
+		"total_input_tokens":       totalInput,
+		"total_output_tokens":      totalOutput,
+		"total_cache_read_tokens":  totalCacheRead,
+		"total_cache_write_tokens": totalCacheWrite,
+		"total_tokens":             totalTokenCount(totalInput, totalOutput, totalCacheRead, totalCacheWrite),
+		"cache_hit_rate":           cacheHitRate(totalInput, totalCacheRead, totalCacheWrite),
+		"total_request_count":      totalRequestCount,
+		"provider_stats":           providerStatsArray,
+		"key_stats":                keyStatsArray,
+		"recent_records":           recentRecords,
+		"provider_quotas":          quota.Snapshots(),
 	}
 }
 
@@ -742,8 +837,9 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	startNano := startOfDay.UnixNano()
 	todayDate := startOfDay.Format("2006-01-02")
 
-	// Get provider stats for today
-	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens, total_tokens, total_cost, request_count FROM provider_stats`)
+	// Get provider stats for today (provider_stats is all-time; kept for compatibility)
+	providerRows, err := db.Query(`SELECT provider_id, provider_name, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, total_tokens, request_count FROM provider_stats`)
 	if err != nil {
 		logger.Error("Failed to get provider stats: %v", err)
 		return emptySummary()
@@ -753,9 +849,11 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	var providerStatsArray []*ProviderStats
 	for providerRows.Next() {
 		var ps ProviderStats
-		if err := providerRows.Scan(&ps.ProviderID, &ps.ProviderName, &ps.InputTokens, &ps.OutputTokens, &ps.TotalTokens, &ps.TotalCost, &ps.RequestCount); err != nil {
+		if err := providerRows.Scan(&ps.ProviderID, &ps.ProviderName, &ps.InputTokens, &ps.OutputTokens,
+			&ps.CacheReadTokens, &ps.CacheWriteTokens, &ps.TotalTokens, &ps.RequestCount); err != nil {
 			continue
 		}
+		ps.CacheHitRate = cacheHitRate(ps.InputTokens, ps.CacheReadTokens, ps.CacheWriteTokens)
 		providerStatsArray = append(providerStatsArray, &ps)
 	}
 	sort.Slice(providerStatsArray, func(i, j int) bool {
@@ -764,7 +862,11 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 
 	// Get key stats for today
 	today := time.Now().Format("2006-01-02")
-	keyRows, err := db.Query(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens, ks.total_tokens, ks.total_cost, ks.ip_addresses, ks.request_count, COALESCE(kds.request_count, 0) as today_req_count, COALESCE(kds.total_cost, 0.0) as today_cost FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?`, today)
+	keyRows, err := db.Query(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens,
+		ks.cache_read_tokens, ks.cache_write_tokens, ks.total_tokens, ks.ip_addresses, ks.request_count,
+		COALESCE(kds.request_count, 0), COALESCE(kds.input_tokens, 0), COALESCE(kds.output_tokens, 0),
+		COALESCE(kds.cache_read_tokens, 0), COALESCE(kds.cache_write_tokens, 0)
+		FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?`, today)
 	if err != nil {
 		logger.Error("Failed to get key stats: %v", err)
 		return emptySummary()
@@ -775,10 +877,15 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	for keyRows.Next() {
 		var ks KeyStats
 		var ipsJSON string
-		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount, &ks.TodayReqCount, &ks.TodayCost); err != nil {
+		if err := keyRows.Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens,
+			&ks.CacheReadTokens, &ks.CacheWriteTokens, &ks.TotalTokens, &ipsJSON, &ks.RequestCount,
+			&ks.TodayReqCount, &ks.TodayInputTokens, &ks.TodayOutputTokens,
+			&ks.TodayCacheReadTokens, &ks.TodayCacheWriteTokens); err != nil {
 			continue
 		}
 		json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
+		ks.CacheHitRate = cacheHitRate(ks.InputTokens, ks.CacheReadTokens, ks.CacheWriteTokens)
+		ks.TodayCacheHitRate = cacheHitRate(ks.TodayInputTokens, ks.TodayCacheReadTokens, ks.TodayCacheWriteTokens)
 		keyStatsArray = append(keyStatsArray, &ks)
 	}
 	sort.Slice(keyStatsArray, func(i, j int) bool {
@@ -787,15 +894,20 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 
 	// Get totals for today from key_daily_stats (unbounded per-day aggregates).
 	// usage_records is capped at 1000 rows so it can't summarize a busy day.
-	var totalInput, totalOutput, totalRequestCount int
-	var totalCost float64
-	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0) FROM key_daily_stats WHERE date = ?`, todayDate).Scan(&totalInput, &totalOutput, &totalRequestCount, &totalCost)
+	var totalInput, totalOutput, totalCacheRead, totalCacheWrite, totalRequestCount int
+	err = db.QueryRow(`SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0),
+		COALESCE(SUM(request_count), 0) FROM key_daily_stats WHERE date = ?`, todayDate).Scan(
+		&totalInput, &totalOutput, &totalCacheRead, &totalCacheWrite, &totalRequestCount)
 	if err != nil {
 		logger.Error("Failed to get today totals from key_daily_stats: %v", err)
 	}
 
 	// Get recent records for today (last 10)
-	recordRows, err := db.Query(`SELECT provider_id, provider_name, model, input_tokens, output_tokens, total_tokens, cost, duration_ms, time_to_first_ms, timestamp, group_name, type_name FROM usage_records WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT 10`, startNano)
+	recordRows, err := db.Query(`SELECT provider_id, provider_name, model, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, total_tokens, duration_ms, time_to_first_ms, timestamp, group_name, type_name,
+		COALESCE(key_id, ''), COALESCE(client_ip, '')
+		FROM usage_records WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT 10`, startNano)
 	if err != nil {
 		logger.Error("Failed to get recent records: %v", err)
 		return emptySummary()
@@ -806,7 +918,9 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	for recordRows.Next() {
 		var r UsageRecord
 		var timestamp int64
-		if err := recordRows.Scan(&r.ProviderID, &r.ProviderName, &r.Model, &r.InputTokens, &r.OutputTokens, &r.TotalTokens, &r.Cost, &r.Duration, &r.TimeToFirst, &timestamp, &r.Group, &r.Type); err != nil {
+		if err := recordRows.Scan(&r.ProviderID, &r.ProviderName, &r.Model, &r.InputTokens, &r.OutputTokens,
+			&r.CacheReadTokens, &r.CacheWriteTokens, &r.TotalTokens, &r.Duration, &r.TimeToFirst,
+			&timestamp, &r.Group, &r.Type, &r.KeyID, &r.ClientIP); err != nil {
 			continue
 		}
 		r.Timestamp = time.Unix(0, timestamp)
@@ -814,25 +928,29 @@ func (s *Stats) GetTodaySummary() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_input_tokens":   totalInput,
-		"total_output_tokens":  totalOutput,
-		"total_tokens":        totalInput + totalOutput,
-		"total_cost":          totalCost,
-		"total_request_count":  totalRequestCount,
-		"provider_stats":       providerStatsArray,
-		"key_stats":           keyStatsArray,
-		"recent_records":       recentRecords,
+		"total_input_tokens":       totalInput,
+		"total_output_tokens":      totalOutput,
+		"total_cache_read_tokens":  totalCacheRead,
+		"total_cache_write_tokens": totalCacheWrite,
+		"total_tokens":             totalTokenCount(totalInput, totalOutput, totalCacheRead, totalCacheWrite),
+		"cache_hit_rate":           cacheHitRate(totalInput, totalCacheRead, totalCacheWrite),
+		"total_request_count":      totalRequestCount,
+		"provider_stats":           providerStatsArray,
+		"key_stats":                keyStatsArray,
+		"recent_records":           recentRecords,
 	}
 }
 
 // DailyStats 每日统计结构
 type DailyStats struct {
-	Date           string  `json:"date"`
-	InputTokens    int     `json:"input_tokens"`
-	OutputTokens   int     `json:"output_tokens"`
-	TotalTokens    int     `json:"total_tokens"`
-	TotalCost      float64 `json:"total_cost"`
-	RequestCount   int     `json:"request_count"`
+	Date             string  `json:"date"`
+	InputTokens      int     `json:"input_tokens"`
+	OutputTokens     int     `json:"output_tokens"`
+	CacheReadTokens  int     `json:"cache_read_tokens"`
+	CacheWriteTokens int     `json:"cache_write_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	CacheHitRate     float64 `json:"cache_hit_rate"`
+	RequestCount     int     `json:"request_count"`
 }
 
 // GetDailyHistory 获取最近7天每日统计
@@ -848,27 +966,30 @@ func (s *Stats) GetDailyHistory() []DailyStats {
 		date := now.AddDate(0, 0, -i)
 		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 
-		var inputTokens, outputTokens, requestCount int
-		var totalCost float64
+		var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, requestCount int
 
 		// key_daily_stats 维护按天累计的请求数与 token 数，无 1000 行截断限制。
 		err := db.QueryRow(`
 			SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-			       COALESCE(SUM(request_count), 0), COALESCE(SUM(total_cost), 0.0)
+			       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0),
+			       COALESCE(SUM(request_count), 0)
 			FROM key_daily_stats WHERE date = ?`,
-			startOfDay.Format("2006-01-02")).Scan(&inputTokens, &outputTokens, &requestCount, &totalCost)
+			startOfDay.Format("2006-01-02")).Scan(&inputTokens, &outputTokens,
+			&cacheReadTokens, &cacheWriteTokens, &requestCount)
 
 		if err != nil {
 			logger.Error("Failed to get daily stats for %s: %v", startOfDay.Format("2006-01-02"), err)
 		}
 
 		result = append(result, DailyStats{
-			Date:         startOfDay.Format("2006-01-02"),
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
-			TotalTokens:  inputTokens + outputTokens,
-			TotalCost:    totalCost,
-			RequestCount: requestCount,
+			Date:             startOfDay.Format("2006-01-02"),
+			InputTokens:      inputTokens,
+			OutputTokens:     outputTokens,
+			CacheReadTokens:  cacheReadTokens,
+			CacheWriteTokens: cacheWriteTokens,
+			TotalTokens:      totalTokenCount(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens),
+			CacheHitRate:     cacheHitRate(inputTokens, cacheReadTokens, cacheWriteTokens),
+			RequestCount:     requestCount,
 		})
 	}
 
@@ -877,14 +998,16 @@ func (s *Stats) GetDailyHistory() []DailyStats {
 
 func emptySummary() map[string]interface{} {
 	return map[string]interface{}{
-		"total_input_tokens":   0,
-		"total_output_tokens":  0,
-		"total_tokens":         0,
-		"total_cost":           0.0,
-		"total_request_count":   0,
-		"provider_stats":       []*ProviderStats{},
-		"key_stats":           []*KeyStats{},
-		"recent_records":       []UsageRecord{},
+		"total_input_tokens":       0,
+		"total_output_tokens":      0,
+		"total_cache_read_tokens":  0,
+		"total_cache_write_tokens": 0,
+		"total_tokens":             0,
+		"cache_hit_rate":           0.0,
+		"total_request_count":      0,
+		"provider_stats":           []*ProviderStats{},
+		"key_stats":                []*KeyStats{},
+		"recent_records":           []UsageRecord{},
 	}
 }
 
@@ -895,11 +1018,23 @@ func GetKeyStats(keyID string) *KeyStats {
 
 	var ks KeyStats
 	var ipsJSON string
-	err := db.QueryRow(`SELECT key_id, input_tokens, output_tokens, total_tokens, total_cost, ip_addresses, request_count FROM key_stats WHERE key_id = ?`, keyID).Scan(&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.TotalTokens, &ks.TotalCost, &ipsJSON, &ks.RequestCount)
+	today := time.Now().Format("2006-01-02")
+	err := db.QueryRow(`SELECT ks.key_id, ks.input_tokens, ks.output_tokens,
+		ks.cache_read_tokens, ks.cache_write_tokens, ks.total_tokens, ks.ip_addresses, ks.request_count,
+		COALESCE(kds.request_count, 0), COALESCE(kds.input_tokens, 0), COALESCE(kds.output_tokens, 0),
+		COALESCE(kds.cache_read_tokens, 0), COALESCE(kds.cache_write_tokens, 0)
+		FROM key_stats ks LEFT JOIN key_daily_stats kds ON ks.key_id = kds.key_id AND kds.date = ?
+		WHERE ks.key_id = ?`, today, keyID).Scan(
+		&ks.KeyID, &ks.InputTokens, &ks.OutputTokens, &ks.CacheReadTokens, &ks.CacheWriteTokens,
+		&ks.TotalTokens, &ipsJSON, &ks.RequestCount,
+		&ks.TodayReqCount, &ks.TodayInputTokens, &ks.TodayOutputTokens,
+		&ks.TodayCacheReadTokens, &ks.TodayCacheWriteTokens)
 	if err != nil {
 		return nil
 	}
 	json.Unmarshal([]byte(ipsJSON), &ks.IPAddresses)
+	ks.CacheHitRate = cacheHitRate(ks.InputTokens, ks.CacheReadTokens, ks.CacheWriteTokens)
+	ks.TodayCacheHitRate = cacheHitRate(ks.TodayInputTokens, ks.TodayCacheReadTokens, ks.TodayCacheWriteTokens)
 	return &ks
 }
 
@@ -960,16 +1095,16 @@ func ResetProviderStats(providerID string) {
 	// Recalculate key_stats for affected keys based on remaining usage_records
 	for _, keyID := range keyIDs {
 		// Get aggregated stats from remaining usage_records for this key
-		var inputTokens, outputTokens, totalTokens, requestCount int
-		var totalCost float64
+		var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens, requestCount int
 		var ipsJSON string
 
 		err := tx.QueryRow(`
 			SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-				COALESCE(SUM(total_tokens), 0), COUNT(*), COALESCE(SUM(cost), 0.0),
+				COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0),
+				COALESCE(SUM(total_tokens), 0), COUNT(*),
 				COALESCE((SELECT ip_addresses FROM key_stats WHERE key_id = ?), '[]')
 			FROM usage_records WHERE key_id = ?`, keyID, keyID).Scan(
-			&inputTokens, &outputTokens, &totalTokens, &requestCount, &totalCost, &ipsJSON)
+			&inputTokens, &outputTokens, &cacheReadTokens, &cacheWriteTokens, &totalTokens, &requestCount, &ipsJSON)
 		if err != nil && err != sql.ErrNoRows {
 			logger.Error("Failed to recalculate key stats for %s: %v", keyID, err)
 			continue
@@ -987,11 +1122,12 @@ func ResetProviderStats(providerID string) {
 				UPDATE key_stats SET
 					input_tokens = ?,
 					output_tokens = ?,
+					cache_read_tokens = ?,
+					cache_write_tokens = ?,
 					total_tokens = ?,
-					total_cost = ?,
 					request_count = ?
 				WHERE key_id = ?`,
-				inputTokens, outputTokens, totalTokens, totalCost, requestCount, keyID)
+				inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens, requestCount, keyID)
 			if err != nil {
 				logger.Error("Failed to update key_stats for %s: %v", keyID, err)
 			}
@@ -1040,10 +1176,8 @@ func ResetKeyStats(keyID string) {
 
 // KeyUsage holds current usage for a key
 type KeyUsage struct {
-	DailyReqCount   int
-	DailyCost       float64
-	TotalReqCount   int
-	TotalCost       float64
+	DailyReqCount int
+	TotalReqCount int
 }
 
 // GetKeyUsage gets the current usage for a key (daily and total)
@@ -1056,13 +1190,13 @@ func GetKeyUsage(keyID string) *KeyUsage {
 
 	// Get daily usage
 	today := time.Now().Format("2006-01-02")
-	err := db.QueryRow(`SELECT COALESCE(request_count, 0), COALESCE(total_cost, 0) FROM key_daily_stats WHERE key_id = ? AND date = ?`, keyID, today).Scan(&usage.DailyReqCount, &usage.DailyCost)
+	err := db.QueryRow(`SELECT COALESCE(request_count, 0) FROM key_daily_stats WHERE key_id = ? AND date = ?`, keyID, today).Scan(&usage.DailyReqCount)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Error("Failed to get daily key usage: %v", err)
 	}
 
 	// Get total usage
-	err = db.QueryRow(`SELECT COALESCE(request_count, 0), COALESCE(total_cost, 0) FROM key_stats WHERE key_id = ?`, keyID).Scan(&usage.TotalReqCount, &usage.TotalCost)
+	err = db.QueryRow(`SELECT COALESCE(request_count, 0) FROM key_stats WHERE key_id = ?`, keyID).Scan(&usage.TotalReqCount)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Error("Failed to get total key usage: %v", err)
 	}
@@ -1070,10 +1204,10 @@ func GetKeyUsage(keyID string) *KeyUsage {
 	return usage
 }
 
-// CheckKeyLimit checks if a request is allowed based on key limits
-// Returns (allowed bool, reason string)
-func CheckKeyLimit(keyID string, keyDailyReqLimit, keyTotalReqLimit int, keyDailyCostLimit, keyTotalCostLimit float64) (bool, string) {
-	if keyDailyReqLimit <= 0 && keyTotalReqLimit <= 0 && keyDailyCostLimit <= 0 && keyTotalCostLimit <= 0 {
+// CheckKeyLimit checks if a request is allowed based on key limits.
+// 花费单价因服务商/模型而异，不再作为限额维度；只保留请求次数限额。
+func CheckKeyLimit(keyID string, keyDailyReqLimit, keyTotalReqLimit int) (bool, string) {
+	if keyDailyReqLimit <= 0 && keyTotalReqLimit <= 0 {
 		return true, ""
 	}
 
@@ -1088,14 +1222,6 @@ func CheckKeyLimit(keyID string, keyDailyReqLimit, keyTotalReqLimit int, keyDail
 
 	if keyTotalReqLimit > 0 && usage.TotalReqCount >= keyTotalReqLimit {
 		return false, fmt.Sprintf("总请求次数限额已用尽 (%d/%d)", usage.TotalReqCount, keyTotalReqLimit)
-	}
-
-	if keyDailyCostLimit > 0 && usage.DailyCost >= keyDailyCostLimit {
-		return false, fmt.Sprintf("每日花费限额已用尽 ($%.4f/$%.4f)", usage.DailyCost, keyDailyCostLimit)
-	}
-
-	if keyTotalCostLimit > 0 && usage.TotalCost >= keyTotalCostLimit {
-		return false, fmt.Sprintf("总花费限额已用尽 ($%.4f/$%.4f)", usage.TotalCost, keyTotalCostLimit)
 	}
 
 	return true, ""

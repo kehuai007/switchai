@@ -112,6 +112,7 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 	// 但 Anthropic 兼容层/旧 OpenAI 兼容服务可能只认其中一个，按上游明确报错降级。
 	compatMaxTokensTried := false
 	compatCompletionTokensTried := false
+	compatReasoningToolsTried := false
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		finalAttempt = attempt
@@ -162,6 +163,18 @@ func doRequestWithRetry(req *http.Request, bodyBytes []byte, provider *config.Pr
 				req.ContentLength = int64(len(patched))
 				compatCompletionTokensTried = true
 				logger.Info("⚠️ 上游不支持 max_completion_tokens，已降级为 max_tokens 重试 (尝试 %d/%d)", attempt, maxRetries)
+				continue
+			}
+		}
+
+		// 兼容重试：部分 GPT 推理模型在 chat/completions 下拒绝
+		// function tools + reasoning_effort，明确报错后强制关闭 reasoning 重试一次。
+		if !compatReasoningToolsTried && attempt < maxRetries && IsReasoningToolsConflict(resp.StatusCode, respBody) {
+			if patched, ok := RewriteReasoningEffortNone(bodyBytes); ok {
+				bodyBytes = patched
+				req.ContentLength = int64(len(patched))
+				compatReasoningToolsTried = true
+				logger.Info("⚠️ 上游不支持 function tools + reasoning_effort，已关闭 reasoning 重试 (尝试 %d/%d)", attempt, maxRetries)
 				continue
 			}
 		}
@@ -257,6 +270,87 @@ func IsMaxCompletionTokensRejected(statusCode int, respBody []byte) bool {
 	return isParamUnsupported(respBody, "max_completion_tokens")
 }
 
+// IsReasoningToolsConflict 判断上游是否明确拒绝
+// “function tools + reasoning_effort” 组合。
+func IsReasoningToolsConflict(statusCode int, respBody []byte) bool {
+	if statusCode != http.StatusBadRequest || len(respBody) == 0 {
+		return false
+	}
+	msg := strings.ToLower(string(respBody))
+	return strings.Contains(msg, "function tools with reasoning_effort are not supported") ||
+		(strings.Contains(msg, "reasoning_effort") &&
+			strings.Contains(msg, "function tools") &&
+			strings.Contains(msg, "not supported"))
+}
+
+// RewriteReasoningEffortNone 在收到上述错误后，把请求体改成“关闭 reasoning”：
+//   - OpenAI 形状：reasoning_effort = "none"
+//   - Anthropic 形状：output_config.effort = "none"；已经是 none 时再尝试
+//     thinking = {"type":"disabled"}
+func RewriteReasoningEffortNone(body []byte) ([]byte, bool) {
+	if len(body) == 0 || !json.Valid(body) {
+		return body, false
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false
+	}
+	tools := asSlice(req["tools"])
+	if len(tools) == 0 {
+		return body, false
+	}
+	// gpt-6.1-* 不支持 reasoning_effort=none，重试只会换来另一条错误；
+	// 保留原始错误，提示用户改用 gpt-6-sol 或其他支持 tools 的模型。
+	if strings.HasPrefix(strings.ToLower(asString(req["model"])), "gpt-6.1") {
+		return body, false
+	}
+
+	isOpenAIShape := false
+	for _, raw := range tools {
+		if asString(asMap(raw)["type"]) == "function" {
+			isOpenAIShape = true
+			break
+		}
+	}
+	if isOpenAIShape {
+		if asString(req["reasoning_effort"]) == "none" {
+			return body, false
+		}
+		req["reasoning_effort"] = "none"
+		patched, err := json.Marshal(req)
+		if err != nil {
+			return body, false
+		}
+		return patched, true
+	}
+
+	outputConfig := asMap(req["output_config"])
+	if outputConfig == nil {
+		outputConfig = map[string]interface{}{}
+	}
+	changed := false
+	if asString(outputConfig["effort"]) != "none" {
+		outputConfig["effort"] = "none"
+		changed = true
+	}
+	req["output_config"] = outputConfig
+	if !changed {
+		thinking := asMap(req["thinking"])
+		if thinking == nil || asString(thinking["type"]) != "disabled" {
+			req["thinking"] = map[string]interface{}{"type": "disabled"}
+			changed = true
+		}
+	}
+	if !changed {
+		return body, false
+	}
+	patched, err := json.Marshal(req)
+	if err != nil {
+		return body, false
+	}
+	return patched, true
+}
+
 func rewriteTokenLimitParam(body []byte, from, to string) ([]byte, bool) {
 	if len(body) == 0 || !json.Valid(body) {
 		return body, false
@@ -337,8 +431,7 @@ func proxyHandler(c *gin.Context) {
 	serverKey := config.GetConfig().GetServerKeyByID(keyID)
 	if serverKey != nil {
 		allowed, reason := stats.CheckKeyLimit(keyID,
-			serverKey.DailyReqLimit, serverKey.TotalReqLimit,
-			serverKey.DailyCostLimit, serverKey.TotalCostLimit)
+			serverKey.DailyReqLimit, serverKey.TotalReqLimit)
 		if !allowed {
 			c.JSON(http.StatusForbidden, gin.H{"error": reason})
 			return
@@ -465,6 +558,14 @@ func proxyHandler(c *gin.Context) {
 			}
 			// else: 非 OpenAI 格式，保持原 targetURL
 
+			// GPT-6/5.6 等推理模型在 chat/completions 下不支持
+			// function tools + reasoning_effort 同时出现；带 tools 时强制关闭
+			// reasoning（Anthropic 侧 output_config.effort=none，OpenAI 侧
+			// reasoning_effort=none），否则 Claude Code 这类 agent 会 100% 被拒。
+			if applyToolReasoningCompat(requestBody, providerModel, provider.IsOpenAIFormat) {
+				logger.Info("⚠️ 模型 %s 带 tools，已自动关闭 reasoning_effort 以兼容上游", providerModel)
+			}
+
 			// 重新序列化请求体
 			bodyBytes, _ = json.Marshal(requestBody)
 			modifiedRequestBody = string(bodyBytes) // 保存修改后的请求体用于历史记录
@@ -491,6 +592,9 @@ func proxyHandler(c *gin.Context) {
 	// 设置正确的 API Key
 	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 	req.Header.Set("Content-Type", "application/json")
+	// 把网关的 request id 透传给上游（AI-MANA 代理会写入审计并原样返回），
+	// 便于在 switchai 日志与上游 /admin 之间用同一个 ID 排查路由。
+	req.Header.Set("x-request-id", requestID)
 
 	// 发送请求，带重试机制
 	resp, finalAttempt, err := doRequestWithRetry(req, bodyBytes, provider, 3)
@@ -562,7 +666,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int
 	var model string
 	firstToken := true
 	var responseBody strings.Builder
@@ -655,14 +759,8 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 				if m, ok := streamData["model"].(string); ok && m != "" {
 					model = m
 				}
-				if usage, ok := streamData["usage"].(map[string]interface{}); ok {
-					if input, ok := asInt(usage["input_tokens"]); ok {
-						inputTokens = input
-					}
-					if output, ok := asInt(usage["output_tokens"]); ok {
-						outputTokens = output
-					}
-				}
+				snap := extractStreamUsage(streamData, provider.IsOpenAIFormat)
+				snap.apply(&inputTokens, &outputTokens, &cacheReadTokens, &cacheWriteTokens)
 			}
 		}
 	}
@@ -671,13 +769,13 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		if !writeFrames(o2c.Finish()) {
 			return
 		}
-		inputTokens, outputTokens = o2c.Usage()
+		inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens = o2c.Usage()
 		model = o2c.ModelName()
 	} else if c2o != nil {
 		if !writeFrames(c2o.Finish()) {
 			return
 		}
-		inputTokens, outputTokens = c2o.Usage()
+		inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens = c2o.Usage()
 		model = c2o.ModelName()
 	}
 
@@ -687,7 +785,7 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		timeToFirst = firstTokenTime.Sub(startTime).Milliseconds()
 	}
 
-	// 如果响应中没有模型信息，使用实际调用的模型（provider_model）用于 cost 计算
+	// 如果响应中没有模型信息，使用实际调用的模型（provider_model）用于统计
 	if model == "" {
 		model = actualModel
 	}
@@ -697,35 +795,35 @@ func handleStreamResponse(c *gin.Context, resp *http.Response, provider *config.
 		model = "unknown"
 	}
 
-	cost := calculateCost(model, inputTokens, outputTokens)
-
 	// 始终记录统计信息
-	stats.RecordUsage(provider.ID, provider.Name, model, userModel, "stream", "claude", inputTokens, outputTokens, cost, duration, timeToFirst, keyID, clientIP)
+	stats.RecordUsage(provider.ID, provider.Name, model, userModel, "stream", "claude",
+		inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, duration, timeToFirst, keyID, clientIP)
 
 	// Save to history
 	history.AddRecord(history.RequestRecord{
-		ID:              requestID,
-		Timestamp:       startTime,
-		Method:          method,
-		Path:            path,
-		ClientIP:        clientIP,
-		KeyID:           keyID,
-		Provider:        provider.Name,
-		Model:           model,
-		UserModel:       userModel,
-		StatusCode:      resp.StatusCode,
-		Duration:        duration,
-		RequestBody:     requestBody,
-		ResponseBody:    responseBody.String(),
-		RequestHeaders:  requestHeaders,
-		ResponseHeaders: resp.Header,
-		RequestSize:     int64(len(requestBody)),
-		ResponseSize:    int64(responseBody.Len()),
-		InputTokens:     inputTokens,
-		OutputTokens:    outputTokens,
-		TotalTokens:     inputTokens + outputTokens,
-		Cost:            cost,
-		RetryCount:      retryCount,
+		ID:               requestID,
+		Timestamp:        startTime,
+		Method:           method,
+		Path:             path,
+		ClientIP:         clientIP,
+		KeyID:            keyID,
+		Provider:         provider.Name,
+		Model:            model,
+		UserModel:        userModel,
+		StatusCode:       resp.StatusCode,
+		Duration:         duration,
+		RequestBody:      requestBody,
+		ResponseBody:     responseBody.String(),
+		RequestHeaders:   requestHeaders,
+		ResponseHeaders:  resp.Header,
+		RequestSize:      int64(len(requestBody)),
+		ResponseSize:     int64(responseBody.Len()),
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
+		TotalTokens:      inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+		RetryCount:       retryCount,
 	})
 }
 
@@ -791,32 +889,19 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 	logger.Info("📄 响应体预览: %s", string(respPreview))
 
 	model := actualModel
-	var inputTokens, outputTokens int
-	var cost float64
+	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int
 
 	// 解析响应以获取 token 使用情况和模型信息
 	var responseBodyForHistory string
 	if resp.StatusCode == 200 && len(respBody) > 0 {
-		// 尝试解析响应以获取 token 使用情况和模型信息
-		var result struct {
-			Model string `json:"model"`
-			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(respBody, &result); err != nil {
-			logger.Error("❌ JSON解析失败: %v, 原始响应: %s", err, string(respBody))
-		} else {
-			// 如果响应中有模型信息，使用响应中的模型
-			if result.Model != "" {
-				model = result.Model
+		if m, in, out, cacheRead, cacheWrite := extractResponseUsage(respBody, provider.IsOpenAIFormat); m != "" || in+out+cacheRead+cacheWrite > 0 {
+			if m != "" {
+				model = m
 			}
-			// 保存 token 信息
-			inputTokens = result.Usage.InputTokens
-			outputTokens = result.Usage.OutputTokens
-			logger.Info("✅ JSON解析成功 - Model: %s, InputTokens: %d, OutputTokens: %d",
-				model, inputTokens, outputTokens)
+			inputTokens, outputTokens = in, out
+			cacheReadTokens, cacheWriteTokens = cacheRead, cacheWrite
+			logger.Info("✅ JSON解析成功 - Model: %s, InputTokens: %d, OutputTokens: %d, CacheRead: %d, CacheWrite: %d",
+				model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
 		}
 		responseBodyForHistory = string(respBody)
 	}
@@ -828,34 +913,34 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 
 	// 记录统计信息
 	duration := time.Since(startTime).Milliseconds()
-	cost = calculateCost(model, inputTokens, outputTokens)
 	stats.RecordUsage(provider.ID, provider.Name, model, userModel, "non-stream", "claude",
-		inputTokens, outputTokens, cost, duration, 0, keyID, clientIP)
+		inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, duration, 0, keyID, clientIP)
 
 	// Save to history
 	history.AddRecord(history.RequestRecord{
-		ID:              requestID,
-		Timestamp:       startTime,
-		Method:          method,
-		Path:            path,
-		ClientIP:        clientIP,
-		KeyID:           keyID,
-		Provider:        provider.Name,
-		Model:           model,
-		UserModel:       userModel,
-		StatusCode:      resp.StatusCode,
-		Duration:        duration,
-		RequestBody:     requestBody,
-		ResponseBody:    responseBodyForHistory,
-		RequestHeaders:  requestHeaders,
-		ResponseHeaders: resp.Header,
-		RequestSize:     int64(len(requestBody)),
-		ResponseSize:    int64(len(respBody)),
-		InputTokens:     inputTokens,
-		OutputTokens:    outputTokens,
-		TotalTokens:     inputTokens + outputTokens,
-		Cost:            cost,
-		RetryCount:      retryCount,
+		ID:               requestID,
+		Timestamp:        startTime,
+		Method:           method,
+		Path:             path,
+		ClientIP:         clientIP,
+		KeyID:            keyID,
+		Provider:         provider.Name,
+		Model:            model,
+		UserModel:        userModel,
+		StatusCode:       resp.StatusCode,
+		Duration:         duration,
+		RequestBody:      requestBody,
+		ResponseBody:     responseBodyForHistory,
+		RequestHeaders:   requestHeaders,
+		ResponseHeaders:  resp.Header,
+		RequestSize:      int64(len(requestBody)),
+		ResponseSize:     int64(len(respBody)),
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
+		TotalTokens:      inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+		RetryCount:       retryCount,
 	})
 
 	// 如果请求格式与提供商格式不匹配，需要转换响应格式
@@ -886,19 +971,4 @@ func handleNonStreamResponse(c *gin.Context, resp *http.Response, provider *conf
 
 	// 原封不动透传响应体，不做任何格式化处理
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
-}
-
-func calculateCost(model string, inputTokens, outputTokens int) float64 {
-	var inputCost, outputCost float64
-	switch {
-	case strings.Contains(model, "opus"):
-		inputCost, outputCost = 0.000015, 0.000075
-	case strings.Contains(model, "sonnet"):
-		inputCost, outputCost = 0.000003, 0.000015
-	case strings.Contains(model, "haiku"):
-		inputCost, outputCost = 0.00000025, 0.00000125
-	default:
-		inputCost, outputCost = 0.000003, 0.000015
-	}
-	return float64(inputTokens)*inputCost + float64(outputTokens)*outputCost
 }

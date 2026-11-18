@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	model TEXT,
 	input_tokens INTEGER,
 	output_tokens INTEGER,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER,
 	cost REAL,
 	duration_ms INTEGER,
@@ -59,6 +61,8 @@ CREATE TABLE IF NOT EXISTS provider_stats (
 	provider_name TEXT,
 	input_tokens INTEGER DEFAULT 0,
 	output_tokens INTEGER DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER DEFAULT 0,
 	total_cost REAL DEFAULT 0,
 	request_count INTEGER DEFAULT 0
@@ -68,6 +72,8 @@ CREATE TABLE IF NOT EXISTS key_stats (
 	key_id TEXT PRIMARY KEY,
 	input_tokens INTEGER DEFAULT 0,
 	output_tokens INTEGER DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER DEFAULT 0,
 	total_cost REAL DEFAULT 0,
 	ip_addresses TEXT DEFAULT '[]',
@@ -80,6 +86,8 @@ CREATE TABLE IF NOT EXISTS key_daily_stats (
 	request_count INTEGER DEFAULT 0,
 	input_tokens INTEGER DEFAULT 0,
 	output_tokens INTEGER DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost REAL DEFAULT 0,
 	PRIMARY KEY (key_id, date)
 );
@@ -90,6 +98,8 @@ CREATE TABLE IF NOT EXISTS provider_token_history (
 	t_bucket      INTEGER NOT NULL,
 	input_tokens  INTEGER NOT NULL DEFAULT 0,
 	output_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens  INTEGER NOT NULL DEFAULT 0,
 	request_count INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(provider_id, t_bucket)
@@ -299,8 +309,7 @@ func TestRecordUsage_PersistsUserModel(t *testing.T) {
 	}
 	t.Cleanup(func() { stats = prevStats })
 
-	RecordUsage("prov-um", "ProviderUM", "actual-model", "my-alias", "g", "t",
-		1, 1, 0.001, 100, 50, "key-um", "127.0.0.1")
+	RecordUsage("prov-um", "ProviderUM", "actual-model", "my-alias", "g", "t", 1, 1, 0, 0, 100, 50, "key-um", "127.0.0.1")
 
 	var got string
 	err := db.QueryRow(`SELECT user_model FROM usage_records WHERE provider_id = ?`, "prov-um").Scan(&got)
@@ -332,10 +341,8 @@ func TestRecordUsage_PersistsKeyDailyTokens(t *testing.T) {
 	defer setupTestDB(t)()
 	t.Cleanup(withTestStats(t))
 
-	RecordUsage("prov-X", "ProviderX", "m", "alias", "g", "t",
-		10, 5, 0.1, 100, 50, "key-X", "127.0.0.1")
-	RecordUsage("prov-X", "ProviderX", "m", "alias", "g", "t",
-		30, 20, 0.2, 200, 80, "key-Y", "127.0.0.1")
+	RecordUsage("prov-X", "ProviderX", "m", "alias", "g", "t", 10, 5, 0, 0, 100, 50, "key-X", "127.0.0.1")
+	RecordUsage("prov-X", "ProviderX", "m", "alias", "g", "t", 30, 20, 0, 0, 200, 80, "key-Y", "127.0.0.1")
 
 	summary := GetStats().GetTodaySummary()
 	if got := summary["total_input_tokens"]; got != 40 {
@@ -347,15 +354,13 @@ func TestRecordUsage_PersistsKeyDailyTokens(t *testing.T) {
 }
 
 // TestGetSummary_PerKeyTodayFromRecordUsage 守护：GetSummary 返回的 key_stats
-// 应当 LEFT JOIN key_daily_stats 取到 today_req_count / today_cost。
+// 应当 LEFT JOIN key_daily_stats 取到今日请求数与缓存 token。
 func TestGetSummary_PerKeyTodayFromRecordUsage(t *testing.T) {
 	defer setupTestDB(t)()
 	t.Cleanup(withTestStats(t))
 
-	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
-		10, 5, 0.1234, 100, 50, "key-A", "127.0.0.1")
-	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
-		20, 7, 0.05, 200, 80, "key-A", "127.0.0.1")
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t", 10, 5, 3, 2, 100, 50, "key-A", "127.0.0.1")
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t", 20, 7, 1, 0, 200, 80, "key-A", "127.0.0.1")
 
 	ksArr, ok := GetStats().GetSummary()["key_stats"].([]*KeyStats)
 	if !ok || len(ksArr) == 0 {
@@ -374,21 +379,28 @@ func TestGetSummary_PerKeyTodayFromRecordUsage(t *testing.T) {
 	if got.TodayReqCount != 2 {
 		t.Errorf("TodayReqCount = %d, want 2", got.TodayReqCount)
 	}
-	if got.TodayCost < 0.1733 || got.TodayCost > 0.1735 {
-		t.Errorf("TodayCost = %f, want ~0.1734", got.TodayCost)
+	if got.TodayInputTokens != 30 || got.TodayOutputTokens != 12 {
+		t.Errorf("Today tokens = %d/%d, want 30/12", got.TodayInputTokens, got.TodayOutputTokens)
+	}
+	if got.TodayCacheReadTokens != 4 || got.TodayCacheWriteTokens != 2 {
+		t.Errorf("Today cache = %d/%d, want 4/2", got.TodayCacheReadTokens, got.TodayCacheWriteTokens)
+	}
+	if got.TodayCacheHitRate < 0.111 || got.TodayCacheHitRate > 0.112 {
+		t.Errorf("TodayCacheHitRate = %f, want ~0.1111", got.TodayCacheHitRate)
+	}
+	if got.CacheReadTokens != 4 || got.CacheWriteTokens != 2 {
+		t.Errorf("Cache tokens = %d/%d, want 4/2", got.CacheReadTokens, got.CacheWriteTokens)
 	}
 }
 
 // TestGetTodaySummary_PerKeyToday 守护：GetTodaySummary 的 key_stats 也应 LEFT
-// JOIN key_daily_stats 取到 today_req_count / today_cost（与 GetSummary 一致）。
+// JOIN key_daily_stats 取到今日请求数与缓存 token（与 GetSummary 一致）。
 func TestGetTodaySummary_PerKeyToday(t *testing.T) {
 	defer setupTestDB(t)()
 	t.Cleanup(withTestStats(t))
 
-	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
-		10, 5, 0.1234, 100, 50, "key-A", "127.0.0.1")
-	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t",
-		20, 7, 0.05, 200, 80, "key-A", "127.0.0.1")
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t", 10, 5, 3, 2, 100, 50, "key-A", "127.0.0.1")
+	RecordUsage("prov-A", "ProviderA", "m", "alias", "g", "t", 20, 7, 1, 0, 200, 80, "key-A", "127.0.0.1")
 
 	ksArr, ok := GetStats().GetTodaySummary()["key_stats"].([]*KeyStats)
 	if !ok || len(ksArr) == 0 {
@@ -407,8 +419,8 @@ func TestGetTodaySummary_PerKeyToday(t *testing.T) {
 	if got.TodayReqCount != 2 {
 		t.Errorf("GetTodaySummary TodayReqCount = %d, want 2", got.TodayReqCount)
 	}
-	if got.TodayCost < 0.1733 || got.TodayCost > 0.1735 {
-		t.Errorf("GetTodaySummary TodayCost = %f, want ~0.1734", got.TodayCost)
+	if got.TodayCacheReadTokens != 4 || got.TodayCacheWriteTokens != 2 {
+		t.Errorf("GetTodaySummary Today cache = %d/%d, want 4/2", got.TodayCacheReadTokens, got.TodayCacheWriteTokens)
 	}
 }
 
@@ -534,7 +546,7 @@ func TestGetKeyTodayBuckets_Empty(t *testing.T) {
 		t.Fatalf("5h buckets length = %d, want 5", len(got.Buckets))
 	}
 	for i, b := range got.Buckets {
-		if b.RequestCount != 0 || b.InputTokens != 0 || b.OutputTokens != 0 || b.Cost != 0 {
+		if b.RequestCount != 0 || b.InputTokens != 0 || b.OutputTokens != 0 || b.CacheReadTokens != 0 || b.CacheWriteTokens != 0 {
 			t.Errorf("桶 %d 不为空: %+v", i, b)
 		}
 	}
@@ -587,11 +599,11 @@ func TestGetKeyTodayBuckets_Boundary(t *testing.T) {
 		}
 	}
 	// 5h 边界用独立 key k5h，避免和 hour 边界记录混到同一 5h 桶
-	insertUsage("k5h", stamp(4, 59, 59), "4:59:59")  // 5h 桶 1 (00:00-04:59)
-	insertUsage("k5h", stamp(5, 0, 0), "5:00:00")    // 5h 桶 2 (05:00-09:59)
+	insertUsage("k5h", stamp(4, 59, 59), "4:59:59") // 5h 桶 1 (00:00-04:59)
+	insertUsage("k5h", stamp(5, 0, 0), "5:00:00")   // 5h 桶 2 (05:00-09:59)
 	// hour 边界用独立 key kh
-	insertUsage("kh", stamp(0, 59, 59), "0:59:59")   // hour 桶 0 (00:00-00:59)
-	insertUsage("kh", stamp(1, 0, 0), "1:00:00")     // hour 桶 1 (01:00-01:59)
+	insertUsage("kh", stamp(0, 59, 59), "0:59:59") // hour 桶 0 (00:00-00:59)
+	insertUsage("kh", stamp(1, 0, 0), "1:00:00")   // hour 桶 1 (01:00-01:59)
 
 	// 5h
 	got5h, _ := GetKeyTodayBuckets("k5h", "5h")
@@ -710,14 +722,14 @@ func TestGetKeyTodayBuckets_7d(t *testing.T) {
 	// today-3 缺失桶应为 0（i=3 → today-3）
 	missing := stats.Buckets[3]
 	if missing.InputTokens != 0 || missing.OutputTokens != 0 ||
-		missing.RequestCount != 0 || missing.Cost != 0 {
+		missing.RequestCount != 0 || missing.CacheReadTokens != 0 || missing.CacheWriteTokens != 0 {
 		t.Errorf("expected zero bucket at i=3, got %+v", missing)
 	}
 
 	// 今天桶（i=6）应能正确读出累计数据
 	today := stats.Buckets[6]
 	if today.InputTokens != 600 || today.OutputTokens != 120 ||
-		today.RequestCount != 6 || today.Cost != 0.60 {
+		today.RequestCount != 6 || today.CacheReadTokens != 0 || today.CacheWriteTokens != 0 {
 		t.Errorf("today bucket mismatch: %+v", today)
 	}
 
@@ -735,10 +747,8 @@ func TestRecordUsage_AccumulatesProviderTokenHistory(t *testing.T) {
 	t.Cleanup(withTestStats(t))
 
 	pid := "test-provider-token"
-	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat",
-		100, 50, 0.01, 200, 100, "k1", "1.2.3.4")
-	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat",
-		200, 80, 0.02, 200, 100, "k1", "1.2.3.4")
+	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat", 100, 50, 0, 0, 200, 100, "k1", "1.2.3.4")
+	RecordUsage(pid, "TestProv", "m1", "um1", "g", "chat", 200, 80, 0, 0, 200, 100, "k1", "1.2.3.4")
 
 	tb := (time.Now().UnixNano() / 1e10) * 10
 

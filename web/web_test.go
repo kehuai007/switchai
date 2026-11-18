@@ -158,6 +158,8 @@ func TestGetTokenHistory_HappyPath(t *testing.T) {
 		t_bucket      INTEGER NOT NULL,
 		input_tokens  INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens  INTEGER NOT NULL DEFAULT 0,
 		request_count INTEGER NOT NULL DEFAULT 0,
 		UNIQUE(provider_id, t_bucket)
@@ -204,6 +206,8 @@ func TestGetTokenHistory_Accepts24h(t *testing.T) {
 		t_bucket      INTEGER NOT NULL,
 		input_tokens  INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		total_tokens  INTEGER NOT NULL DEFAULT 0,
 		request_count INTEGER NOT NULL DEFAULT 0,
 		UNIQUE(provider_id, t_bucket)

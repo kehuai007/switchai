@@ -972,6 +972,161 @@ func openAIUsageToClaude(v interface{}) map[string]interface{} {
 // 流式转换
 // ---------------------------------------------------------------------------
 
+// usageSnapshot 是缓存字段的归一化结果。
+// OpenAI 的 prompt_tokens 包含 cached_tokens，这里统一归一化为
+// input = 非缓存输入、cacheRead = 缓存读，和 Anthropic 的 input_tokens 语义一致。
+type usageSnapshot struct {
+	inputTokens      int
+	outputTokens     int
+	cacheReadTokens  int
+	cacheWriteTokens int
+	hasInput         bool
+	hasOutput        bool
+	hasCacheRead     bool
+	hasCacheWrite    bool
+}
+
+func parseOpenAIUsage(usage map[string]interface{}) usageSnapshot {
+	var s usageSnapshot
+	if usage == nil {
+		return s
+	}
+	if prompt, ok := asInt(usage["prompt_tokens"]); ok {
+		cached := 0
+		if details := asMap(usage["prompt_tokens_details"]); details != nil {
+			if v, ok := asInt(details["cached_tokens"]); ok {
+				cached = v
+			}
+		}
+		if cached > prompt {
+			cached = prompt
+		}
+		s.inputTokens = prompt - cached
+		s.cacheReadTokens = cached
+		s.hasInput = true
+		s.hasCacheRead = true
+	}
+	if output, ok := asInt(usage["completion_tokens"]); ok {
+		s.outputTokens = output
+		s.hasOutput = true
+	}
+	return s
+}
+
+func parseClaudeUsage(usage map[string]interface{}) usageSnapshot {
+	var s usageSnapshot
+	if usage == nil {
+		return s
+	}
+	if v, ok := asInt(usage["input_tokens"]); ok {
+		s.inputTokens = v
+		s.hasInput = true
+	}
+	if v, ok := asInt(usage["output_tokens"]); ok {
+		s.outputTokens = v
+		s.hasOutput = true
+	}
+	if v, ok := asInt(usage["cache_read_input_tokens"]); ok {
+		s.cacheReadTokens = v
+		s.hasCacheRead = true
+	}
+	if v, ok := asInt(usage["cache_creation_input_tokens"]); ok {
+		s.cacheWriteTokens = v
+		s.hasCacheWrite = true
+	}
+	return s
+}
+
+func (s usageSnapshot) apply(input, output, cacheRead, cacheWrite *int) {
+	if s.hasInput {
+		*input = s.inputTokens
+	}
+	if s.hasOutput {
+		*output = s.outputTokens
+	}
+	if s.hasCacheRead {
+		*cacheRead = s.cacheReadTokens
+	}
+	if s.hasCacheWrite {
+		*cacheWrite = s.cacheWriteTokens
+	}
+}
+
+// extractStreamUsage 从一条流式事件中取 usage；Anthropic 的 message_start
+// 把 usage 放在 message.usage，message_delta 放在顶层 usage。
+func extractStreamUsage(event map[string]interface{}, isOpenAI bool) usageSnapshot {
+	if isOpenAI {
+		return parseOpenAIUsage(asMap(event["usage"]))
+	}
+	usage := asMap(event["usage"])
+	if message := asMap(event["message"]); message != nil {
+		if nested := asMap(message["usage"]); nested != nil {
+			usage = nested
+		}
+	}
+	return parseClaudeUsage(usage)
+}
+
+// extractResponseUsage 从完整非流式响应中提取模型名与 tokens。
+func extractResponseUsage(body []byte, isOpenAI bool) (model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int) {
+	var root map[string]interface{}
+	if err := json.Unmarshal(body, &root); err != nil {
+		return "", 0, 0, 0, 0
+	}
+	model = asString(root["model"])
+	usage := asMap(root["usage"])
+	var snap usageSnapshot
+	if isOpenAI {
+		snap = parseOpenAIUsage(usage)
+	} else {
+		snap = parseClaudeUsage(usage)
+	}
+	snap.apply(&inputTokens, &outputTokens, &cacheReadTokens, &cacheWriteTokens)
+	return model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens
+}
+
+// isReasoningToolLimitedModel 判断模型是否属于“chat/completions 下
+// function tools 与 reasoning_effort 冲突，且 reasoning_effort=none 可用”的模型。
+// 实测：gpt-6-sol/gpt-6-astra/gpt-6-luna 支持 none；
+// gpt-6.1-* 不支持 none（会报 Supported values are low/medium/high/xhigh），
+// 且任何 reasoning_effort + tools 都会被拒，属于上游硬限制，不能靠改请求绕过。
+func isReasoningToolLimitedModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(m, "gpt-6.1") {
+		return false
+	}
+	return strings.HasPrefix(m, "gpt-6")
+}
+
+// applyToolReasoningCompat 在请求带 tools 且模型属于上述家族时，强制关闭
+// reasoning_effort：
+//   - OpenAI 请求体：reasoning_effort = "none"
+//   - Anthropic 请求体：output_config.effort = "none"
+//
+// 返回是否做了修改。已在 none 上则返回 false，避免无意义日志。
+func applyToolReasoningCompat(body map[string]interface{}, model string, openAIFormat bool) bool {
+	if len(asSlice(body["tools"])) == 0 || !isReasoningToolLimitedModel(model) {
+		return false
+	}
+	if openAIFormat {
+		if asString(body["reasoning_effort"]) == "none" {
+			return false
+		}
+		body["reasoning_effort"] = "none"
+		return true
+	}
+	outputConfig := asMap(body["output_config"])
+	if outputConfig == nil {
+		outputConfig = map[string]interface{}{}
+	}
+	if asString(outputConfig["effort"]) == "none" {
+		return false
+	}
+	outputConfig["effort"] = "none"
+	body["output_config"] = outputConfig
+	return true
+}
+
 // sseDataPayload 从一行 SSE 中取出 data 负载；非 data 行返回 false。
 func sseDataPayload(line string) (string, bool) {
 	if !strings.HasPrefix(line, "data:") {
@@ -1011,6 +1166,7 @@ type openAIToClaudeStream struct {
 	stopReason       string
 	inputTokens      int
 	outputTokens     int
+	cacheReadTokens  int
 	messageDeltaSent bool
 }
 
@@ -1101,11 +1257,15 @@ func (s *openAIToClaudeStream) Feed(data string) []string {
 		s.model = model
 	}
 	if usage := asMap(chunk["usage"]); usage != nil {
-		if v, ok := asInt(usage["prompt_tokens"]); ok {
-			s.inputTokens = v
+		snap := parseOpenAIUsage(usage)
+		if snap.hasInput {
+			s.inputTokens = snap.inputTokens
 		}
-		if v, ok := asInt(usage["completion_tokens"]); ok {
-			s.outputTokens = v
+		if snap.hasOutput {
+			s.outputTokens = snap.outputTokens
+		}
+		if snap.hasCacheRead {
+			s.cacheReadTokens = snap.cacheReadTokens
 		}
 	}
 
@@ -1205,8 +1365,10 @@ func (s *openAIToClaudeStream) Finish() []string {
 				"stop_sequence": nil,
 			},
 			"usage": map[string]interface{}{
-				"input_tokens":  s.inputTokens,
-				"output_tokens": s.outputTokens,
+				"input_tokens":                s.inputTokens,
+				"output_tokens":               s.outputTokens,
+				"cache_read_input_tokens":     s.cacheReadTokens,
+				"cache_creation_input_tokens": 0,
 			},
 		}))
 		s.messageDeltaSent = true
@@ -1216,8 +1378,8 @@ func (s *openAIToClaudeStream) Finish() []string {
 	return frames
 }
 
-func (s *openAIToClaudeStream) Usage() (int, int) {
-	return s.inputTokens, s.outputTokens
+func (s *openAIToClaudeStream) Usage() (int, int, int, int) {
+	return s.inputTokens, s.outputTokens, s.cacheReadTokens, 0
 }
 
 func (s *openAIToClaudeStream) ModelName() string {
@@ -1242,17 +1404,19 @@ func claudeStopReasonForDelta(finishReason string) interface{} {
 
 // claudeToOpenAIStream 把 Anthropic SSE 事件转成 OpenAI Chat Completions 流式 chunk。
 type claudeToOpenAIStream struct {
-	started      bool
-	finished     bool
-	id           string
-	model        string
-	created      int64
-	inputTokens  int
-	outputTokens int
-	blockToTool  map[int]int
-	nextTool     int
-	stopReason   string
-	finishSent   bool
+	started          bool
+	finished         bool
+	id               string
+	model            string
+	created          int64
+	inputTokens      int
+	outputTokens     int
+	cacheReadTokens  int
+	cacheWriteTokens int
+	blockToTool      map[int]int
+	nextTool         int
+	stopReason       string
+	finishSent       bool
 }
 
 func newClaudeToOpenAIStream() *claudeToOpenAIStream {
@@ -1315,11 +1479,18 @@ func (s *claudeToOpenAIStream) Feed(data string) []string {
 			s.model = model
 		}
 		if usage := asMap(message["usage"]); usage != nil {
-			if v, ok := asInt(usage["input_tokens"]); ok {
-				s.inputTokens = v
+			snap := parseClaudeUsage(usage)
+			if snap.hasInput {
+				s.inputTokens = snap.inputTokens
 			}
-			if v, ok := asInt(usage["output_tokens"]); ok {
-				s.outputTokens = v
+			if snap.hasOutput {
+				s.outputTokens = snap.outputTokens
+			}
+			if snap.hasCacheRead {
+				s.cacheReadTokens = snap.cacheReadTokens
+			}
+			if snap.hasCacheWrite {
+				s.cacheWriteTokens = snap.cacheWriteTokens
 			}
 		}
 		return s.ensureStarted()
@@ -1376,11 +1547,18 @@ func (s *claudeToOpenAIStream) Feed(data string) []string {
 			s.stopReason = stopReason
 		}
 		if usage := asMap(event["usage"]); usage != nil {
-			if v, ok := asInt(usage["output_tokens"]); ok {
-				s.outputTokens = v
+			snap := parseClaudeUsage(usage)
+			if snap.hasInput {
+				s.inputTokens = snap.inputTokens
 			}
-			if v, ok := asInt(usage["input_tokens"]); ok {
-				s.inputTokens = v
+			if snap.hasOutput {
+				s.outputTokens = snap.outputTokens
+			}
+			if snap.hasCacheRead {
+				s.cacheReadTokens = snap.cacheReadTokens
+			}
+			if snap.hasCacheWrite {
+				s.cacheWriteTokens = snap.cacheWriteTokens
 			}
 		}
 		if !s.finishSent {
@@ -1420,6 +1598,7 @@ func (s *claudeToOpenAIStream) Finish() []string {
 		frames = append(frames, openAIStreamFrame(s.chunk(nil, claudeStopReasonToOpenAI(s.stopReason))))
 		s.finishSent = true
 	}
+	promptTokens := s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
 	frames = append(frames, openAIStreamFrame(map[string]interface{}{
 		"id":      s.id,
 		"object":  "chat.completion.chunk",
@@ -1427,9 +1606,10 @@ func (s *claudeToOpenAIStream) Finish() []string {
 		"model":   s.model,
 		"choices": []interface{}{},
 		"usage": map[string]interface{}{
-			"prompt_tokens":     s.inputTokens,
-			"completion_tokens": s.outputTokens,
-			"total_tokens":      s.inputTokens + s.outputTokens,
+			"prompt_tokens":         promptTokens,
+			"completion_tokens":     s.outputTokens,
+			"total_tokens":          promptTokens + s.outputTokens,
+			"prompt_tokens_details": map[string]interface{}{"cached_tokens": s.cacheReadTokens},
 		},
 	}))
 	frames = append(frames, openAIDoneFrame)
@@ -1437,8 +1617,8 @@ func (s *claudeToOpenAIStream) Finish() []string {
 	return frames
 }
 
-func (s *claudeToOpenAIStream) Usage() (int, int) {
-	return s.inputTokens, s.outputTokens
+func (s *claudeToOpenAIStream) Usage() (int, int, int, int) {
+	return s.inputTokens, s.outputTokens, s.cacheReadTokens, s.cacheWriteTokens
 }
 
 func (s *claudeToOpenAIStream) ModelName() string {

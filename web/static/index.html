@@ -7,7 +7,7 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { width: 100%; max-width: 100%; margin: 0 auto; }
         h1 { color: #333; margin-bottom: 30px; }
         .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
@@ -97,6 +97,15 @@
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto; }
         .modal.show { display: flex; align-items: center; justify-content: center; padding: 20px; }
         .modal-content { background: white; border-radius: 8px; padding: 30px; max-width: 500px; width: 90%; max-height: calc(100vh - 40px); overflow-y: auto; box-sizing: border-box; }
+        .modal-content.modal-wide { max-width: 800px; }
+        .modal-content.modal-xwide { max-width: 1100px; }
+        .modal-content.modal-flex { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+        .modal-header-bar { padding: 20px 30px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        .modal-header-bar h2 { margin: 0; }
+        .modal-content.modal-wide > .modal-header-bar { padding: 0 0 15px 0; }
+        .modal-flex form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+        .modal-body-scroll { padding: 20px 30px; overflow-y: auto; min-height: 0; flex: 1; }
+        .modal-footer-actions { padding: 15px 30px; border-top: 1px solid #e2e8f0; display: flex; gap: 10px; justify-content: flex-end; flex-shrink: 0; background: #fff; }
         .form-group { margin-bottom: 15px; }
         .form-group label { display: block; margin-bottom: 5px; color: #333; font-weight: 500; }
         .form-group input, .form-group textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
@@ -320,7 +329,7 @@
         <h1 style="display: flex; justify-content: space-between; align-items: center;">
             <span>SwitchAI - Anthropic API 聚合服务</span>
             <div style="display: flex; gap: 10px; align-items: center;">
-                <a href="https://github.com/kehuai007/switchai" target="_blank" style="font-size: 12px; color: #667eea; text-decoration: none;">v1.1.4</a>
+                <a href="https://github.com/kehuai007/switchai" target="_blank" style="font-size: 12px; color: #667eea; text-decoration: none;">v1.1.5</a>
                 <a href="/log.html" style="font-size: 16px; color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: all 0.3s;">Token Stats</a>
                 <button class="btn-danger" onclick="doLogout()" style="padding: 8px 16px;">退出登录</button>
             </div>
@@ -342,8 +351,16 @@
                     <div class="stat-value" id="totalTokens">0</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-label">总花费</div>
-                    <div class="stat-value" id="totalCost">$0.00</div>
+                    <div class="stat-label">缓存读 Token</div>
+                    <div class="stat-value" id="totalCacheRead">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">缓存写 Token</div>
+                    <div class="stat-value" id="totalCacheWrite">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label" title="累计值包含缓存统计上线前的历史请求">缓存命中率（累计）</div>
+                    <div class="stat-value" id="totalCacheHitRate">0%</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-label">总请求数</div>
@@ -368,8 +385,16 @@
                     <div class="stat-value" id="todayTokens">0</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-label">今日花费</div>
-                    <div class="stat-value" id="todayCost">$0.00</div>
+                    <div class="stat-label">今日缓存读 Token</div>
+                    <div class="stat-value" id="todayCacheRead">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">今日缓存写 Token</div>
+                    <div class="stat-value" id="todayCacheWrite">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">今日缓存命中率</div>
+                    <div class="stat-value" id="todayCacheHitRate">0%</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-label">今日请求数</div>
@@ -384,6 +409,7 @@
                 <span class="arrow">▼</span>
             </div>
             <div class="history-content" id="historyContent">
+                <p style="font-size: 12px; color: #999; margin-bottom: 10px;">按天统计；缓存读/写从本次统计升级后开始记录，升级前的日期显示 0%。</p>
                 <div class="history-grid" id="historyGrid"></div>
             </div>
         </div>
@@ -407,8 +433,11 @@
 
     <!-- Add Provider Modal -->
     <div class="modal" id="addModal">
-        <div class="modal-content">
-            <h2 style="margin-bottom: 20px;">添加 API 提供商</h2>
+        <div class="modal-content modal-wide">
+            <div class="modal-header-bar">
+                <h2>添加 API 提供商</h2>
+                <button type="button" class="modal-close" onclick="hideAddModal()">×</button>
+            </div>
             <form id="addForm">
                 <div class="form-group">
                     <label>名称</label>
@@ -456,8 +485,11 @@
 
     <!-- Edit Provider Modal -->
     <div class="modal" id="editModal">
-        <div class="modal-content">
-            <h2 style="margin-bottom: 20px;">编辑 API 提供商</h2>
+        <div class="modal-content modal-wide">
+            <div class="modal-header-bar">
+                <h2>编辑 API 提供商</h2>
+                <button type="button" class="modal-close" onclick="hideEditModal()">×</button>
+            </div>
             <form id="editForm">
                 <input type="hidden" name="id" id="editId">
                 <div class="form-group">
@@ -529,10 +561,14 @@
 
     <!-- Edit Key Modal -->
     <div class="modal" id="editKeyModal">
-        <div class="modal-content">
-            <h2 style="margin-bottom: 20px;">编辑 API 密钥</h2>
+        <div class="modal-content modal-xwide modal-flex">
+            <div class="modal-header-bar">
+                <h2>编辑 API 密钥</h2>
+                <button type="button" class="modal-close" onclick="hideEditKeyModal()">×</button>
+            </div>
             <form id="editKeyForm">
                 <input type="hidden" name="id" id="editKeyId">
+                <div class="modal-body-scroll">
                 <div class="form-group">
                     <label>密钥</label>
                     <div style="display: flex; align-items: center; gap: 10px;">
@@ -580,15 +616,8 @@
                             <label>总请求次数限额</label>
                             <input type="number" name="total_req_limit" id="editKeyTotalReqLimit" placeholder="0=不限" min="0">
                         </div>
-                        <div class="form-group">
-                            <label>每日花费限额 ($)</label>
-                            <input type="number" name="daily_cost_limit" id="editKeyDailyCostLimit" placeholder="0=不限" min="0" step="0.01">
-                        </div>
-                        <div class="form-group">
-                            <label>总花费限额 ($)</label>
-                            <input type="number" name="total_cost_limit" id="editKeyTotalCostLimit" placeholder="0=不限" min="0" step="0.01">
-                        </div>
                     </div>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">花费因服务商/模型单价不同，不再作为限额维度。</p>
                 </div>
                 <div style="border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px;">
                     <h4 style="margin-bottom: 10px; color: #4a5568;">测试 API 连接</h4>
@@ -603,7 +632,8 @@
                     </div>
                     <div id="editKeyTestResult" class="hidden" style="margin-top: 10px; padding: 10px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></div>
                 </div>
-                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px;">
+                </div>
+                <div class="modal-footer-actions">
                     <button type="button" class="btn-danger" onclick="hideEditKeyModal()">取消</button>
                     <button type="submit" class="btn-success">保存</button>
                 </div>
@@ -934,24 +964,15 @@
             }
 
             list.innerHTML = serverKeys.map((k, index) => {
-                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost: 0, request_count: 0, today_req_count: 0, today_cost: 0, ip_addresses: [] };
-                const ips = stat.ip_addresses ? stat.ip_addresses.join(', ') : '无';
-                const costDisplay = stat.total_cost > 0 ? '$' + stat.total_cost.toFixed(4) : '$0';
-                const todayCostDisplay = stat.today_cost > 0 ? '$' + stat.today_cost.toFixed(4) : '$0';
+                const stat = keyStats[k.id] || { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cache_hit_rate: 0, request_count: 0, today_req_count: 0, ip_addresses: [] };
 
-                // 构建限额显示
+                // 构建限额显示（花费单价不统一，已移除花费限额）
                 const limits = [];
                 if (k.daily_req_limit > 0) {
                     limits.push(`<span style="color: #ed8936;">日请求 ${stat.today_req_count || 0}/${k.daily_req_limit}</span>`);
                 }
                 if (k.total_req_limit > 0) {
                     limits.push(`<span style="color: #ed8936;">总请求 ${stat.request_count || 0}/${k.total_req_limit}</span>`);
-                }
-                if (k.daily_cost_limit > 0) {
-                    limits.push(`<span style="color: #ed8936;">日花费 ${todayCostDisplay}/$${k.daily_cost_limit.toFixed(2)}</span>`);
-                }
-                if (k.total_cost_limit > 0) {
-                    limits.push(`<span style="color: #ed8936;">总花费 ${costDisplay}/$${k.total_cost_limit.toFixed(2)}</span>`);
                 }
 
                 return `
@@ -977,12 +998,16 @@
                                 <div class="key-stat-label">总请求</div>
                             </div>
                             <div class="key-stat">
-                                <div class="key-stat-value">${todayCostDisplay}</div>
-                                <div class="key-stat-label">今日花费</div>
+                                <div class="key-stat-value">${formatToken(stat.cache_read_tokens || 0)}</div>
+                                <div class="key-stat-label">缓存读</div>
                             </div>
                             <div class="key-stat">
-                                <div class="key-stat-value">${costDisplay}</div>
-                                <div class="key-stat-label">总花费</div>
+                                <div class="key-stat-value">${formatToken(stat.cache_write_tokens || 0)}</div>
+                                <div class="key-stat-label">缓存写</div>
+                            </div>
+                            <div class="key-stat">
+                                <div class="key-stat-value">${formatPercent(stat.cache_hit_rate || cacheHitRate(stat.input_tokens, stat.cache_read_tokens, stat.cache_write_tokens))}</div>
+                                <div class="key-stat-label">缓存命中率</div>
                             </div>
                         </div>
                         <div class="key-item-actions">
@@ -1092,8 +1117,6 @@
             document.getElementById('editKeyEnabled').checked = key.is_enabled;
             document.getElementById('editKeyDailyReqLimit').value = key.daily_req_limit || 0;
             document.getElementById('editKeyTotalReqLimit').value = key.total_req_limit || 0;
-            document.getElementById('editKeyDailyCostLimit').value = key.daily_cost_limit || 0;
-            document.getElementById('editKeyTotalCostLimit').value = key.total_cost_limit || 0;
             renderMappings(key.mappings || []);
             populateTestModelDropdown();
 
@@ -1339,51 +1362,22 @@
             }).join('');
         }
 
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+        function cacheHitRate(inputTokens, cacheRead, cacheWrite) {
+            const total = (inputTokens || 0) + (cacheRead || 0) + (cacheWrite || 0);
+            return total > 0 ? (cacheRead || 0) / total : 0;
+        }
 
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-            };
-
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                console.log('WebSocket message received:', data);
-                if (data.total_input_tokens !== undefined) {
-                    updateStats(data);
-                    // 今日统计也来自同一份 summary（total_* 字段），独立 GET /api/stats/daily 太慢
-                    updateTodayStats(data);
-                    // 更新密钥统计
-                    if (data.key_stats) {
-                        keyStats = {};
-                        data.key_stats.forEach(stat => {
-                            keyStats[stat.key_id] = stat;
-                        });
-                        renderServerKeys();
-                    }
-                } else if (data.input_tokens !== undefined) {
-                    console.log('New token usage received, refreshing stats...');
-                    loadStats();
-                    loadDailyStats();
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
-
-            ws.onclose = () => {
-                console.log('WebSocket disconnected, reconnecting...');
-                setTimeout(connectWebSocket, 3000);
-            };
+        function formatPercent(rate) {
+            return ((rate || 0) * 100).toFixed(1) + '%';
         }
 
         function updateStats(data) {
             document.getElementById('totalInput').textContent = formatToken(data.total_input_tokens || 0);
             document.getElementById('totalOutput').textContent = formatToken(data.total_output_tokens || 0);
             document.getElementById('totalTokens').textContent = formatToken(data.total_tokens || 0);
-            document.getElementById('totalCost').textContent = '$' + (data.total_cost || 0).toFixed(4);
+            document.getElementById('totalCacheRead').textContent = formatToken(data.total_cache_read_tokens || 0);
+            document.getElementById('totalCacheWrite').textContent = formatToken(data.total_cache_write_tokens || 0);
+            document.getElementById('totalCacheHitRate').textContent = formatPercent(data.cache_hit_rate || cacheHitRate(data.total_input_tokens, data.total_cache_read_tokens, data.total_cache_write_tokens));
             document.getElementById('totalRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
         }
 
@@ -1400,8 +1394,32 @@
             document.getElementById('todayInput').textContent = formatToken(data.total_input_tokens || 0);
             document.getElementById('todayOutput').textContent = formatToken(data.total_output_tokens || 0);
             document.getElementById('todayTokens').textContent = formatToken(data.total_tokens || 0);
-            document.getElementById('todayCost').textContent = '$' + (data.total_cost || 0).toFixed(4);
+            document.getElementById('todayCacheRead').textContent = formatToken(data.total_cache_read_tokens || 0);
+            document.getElementById('todayCacheWrite').textContent = formatToken(data.total_cache_write_tokens || 0);
+            document.getElementById('todayCacheHitRate').textContent = formatPercent(data.cache_hit_rate || cacheHitRate(data.total_input_tokens, data.total_cache_read_tokens, data.total_cache_write_tokens));
             document.getElementById('todayRequestCount').textContent = (data.total_request_count || 0).toLocaleString();
+        }
+
+        // WebSocket summary 里的 key_stats 带 today_* 字段；汇总成今日卡片，
+        // 避免直接用 summary.total_*（全量累计）覆盖今日数据。
+        function updateTodayStatsFromKeys(keyStats) {
+            const sum = {
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cache_read_tokens: 0,
+                total_cache_write_tokens: 0,
+                total_request_count: 0,
+            };
+            for (const k of keyStats || []) {
+                sum.total_input_tokens += k.today_input_tokens || 0;
+                sum.total_output_tokens += k.today_output_tokens || 0;
+                sum.total_cache_read_tokens += k.today_cache_read_tokens || 0;
+                sum.total_cache_write_tokens += k.today_cache_write_tokens || 0;
+                sum.total_request_count += k.today_req_count || 0;
+            }
+            sum.total_tokens = sum.total_input_tokens + sum.total_output_tokens +
+                sum.total_cache_read_tokens + sum.total_cache_write_tokens;
+            updateTodayStats(sum);
         }
 
         function renderDailyHistory(dailyHistory) {
@@ -1413,8 +1431,8 @@
                     <div class="history-date">${day.date === today ? '今日' : day.date}</div>
                     <div class="history-value">${formatToken(day.total_tokens)}</div>
                     <div class="history-label">Token</div>
-                    <div class="history-value" style="font-size: 14px; color: #38ef7d;">$${day.total_cost.toFixed(4)}</div>
-                    <div class="history-label">花费 · ${day.request_count} 请求</div>
+                    <div class="history-value" style="font-size: 14px; color: #38a169;">${formatPercent(day.cache_hit_rate || cacheHitRate(day.input_tokens, day.cache_read_tokens, day.cache_write_tokens))}</div>
+                    <div class="history-label">缓存命中 · ${day.request_count} 请求</div>
                 </div>
             `).join('');
         }
@@ -1463,15 +1481,15 @@
                 console.log('WebSocket message received:', data);
                 if (data.total_input_tokens !== undefined) {
                     updateStats(data);
-                    // 今日统计也来自同一份 summary（total_* 字段），独立 GET /api/stats/daily 太慢
-                    updateTodayStats(data);
-                    // 更新密钥统计
+                    // 今日统计从 key_stats 的 today_* 字段汇总；
+                    // 不能直接用 summary 的 total_*（全量累计，会把今日卡片冲成全量）。
                     if (data.key_stats) {
                         keyStats = {};
                         data.key_stats.forEach(stat => {
                             keyStats[stat.key_id] = stat;
                         });
                         renderServerKeys();
+                        updateTodayStatsFromKeys(data.key_stats);
                     }
                 } else if (data.input_tokens !== undefined) {
                     console.log('New token usage received, refreshing stats...');
@@ -2156,9 +2174,7 @@
                 remark: formData.get('remark') || '',
                 is_enabled: formData.get('is_enabled') === 'on',
                 daily_req_limit: parseInt(formData.get('daily_req_limit')) || 0,
-                total_req_limit: parseInt(formData.get('total_req_limit')) || 0,
-                daily_cost_limit: parseFloat(formData.get('daily_cost_limit')) || 0,
-                total_cost_limit: parseFloat(formData.get('total_cost_limit')) || 0
+                total_req_limit: parseInt(formData.get('total_req_limit')) || 0
             };
 
             try {
@@ -2325,13 +2341,15 @@
                         return `<b>${tStart.toLocaleString()} - ${tEndLabel}</b><br/>
                             输入 token: ${formatTokenCount(b.input_tokens)}<br/>
                             输出 token: ${formatTokenCount(b.output_tokens)}<br/>
+                            缓存读: ${formatTokenCount(b.cache_read_tokens || 0)}<br/>
+                            缓存写: ${formatTokenCount(b.cache_write_tokens || 0)}<br/>
+                            缓存命中率: ${formatPercent(cacheHitRate(b.input_tokens, b.cache_read_tokens, b.cache_write_tokens))}<br/>
                             请求数: ${b.request_count.toLocaleString()}<br/>
-                            花费: $${b.cost.toFixed(4)}<br/>
-                            总 Token: ${formatTokenCount(b.input_tokens + b.output_tokens)}`;
+                            总 Token: ${formatTokenCount(b.total_tokens || (b.input_tokens + b.output_tokens + (b.cache_read_tokens || 0) + (b.cache_write_tokens || 0)))}`;
                     }
                 },
                 legend: {
-                    data: ['输入 token', '输出 token', '请求数', '花费'],
+                    data: ['输入 token', '输出 token', '缓存读', '缓存写', '请求数', '总 Token'],
                     top: 0,
                     textStyle: { color: '#4a5568', fontSize: 12 }
                 },
@@ -2350,9 +2368,6 @@
                     { type: 'value', name: '请求数', position: 'left', offset: 50,
                       axisLabel: { color: '#718096' },
                       splitLine: { show: false } },
-                    { type: 'value', name: '花费 ($)', position: 'right',
-                      axisLabel: { color: '#718096', formatter: '$${value}' },
-                      splitLine: { show: false } },
                     { type: 'value', name: '总 Token', position: 'right', offset: 50,
                       axisLabel: { color: '#718096', formatter: v => formatTokenCount(v) },
                       splitLine: { show: false } }
@@ -2365,18 +2380,22 @@
                     { name: '输出 token', type: 'line', yAxisIndex: 0, smooth: true, symbol: 'none',
                       itemStyle: { color: '#764ba2' },
                       data: buckets.map(b => b.output_tokens) },
+                    { name: '缓存读', type: 'line', yAxisIndex: 0, smooth: true, symbol: 'none',
+                      itemStyle: { color: '#38a169' },
+                      lineStyle: { color: '#38a169', width: 2 },
+                      data: buckets.map(b => b.cache_read_tokens || 0) },
+                    { name: '缓存写', type: 'line', yAxisIndex: 0, smooth: true, symbol: 'none',
+                      itemStyle: { color: '#d69e2e' },
+                      lineStyle: { color: '#d69e2e', width: 2, type: 'dashed' },
+                      data: buckets.map(b => b.cache_write_tokens || 0) },
                     { name: '请求数', type: 'bar', yAxisIndex: 1,
-                      itemStyle: { color: 'rgba(237,137,54,0.4)' },
+                      itemStyle: { color: 'rgba(237,137,54,0.25)' },
                       barWidth: '40%',
                       data: buckets.map(b => b.request_count) },
-                    { name: '花费', type: 'line', yAxisIndex: 2, smooth: true, symbol: 'none',
-                      itemStyle: { color: '#11998e' },
-                      lineStyle: { color: '#11998e', width: 1.5, type: 'dashed' },
-                      data: buckets.map(b => b.cost) },
-                    { name: '总 Token', type: 'line', yAxisIndex: 3, smooth: true, symbol: 'none',
+                    { name: '总 Token', type: 'line', yAxisIndex: 2, smooth: true, symbol: 'none',
                       itemStyle: { color: '#ec4899' },
                       lineStyle: { color: '#ec4899', width: 2 },
-                      data: buckets.map(b => b.input_tokens + b.output_tokens) }
+                      data: buckets.map(b => b.total_tokens || (b.input_tokens + b.output_tokens + (b.cache_read_tokens || 0) + (b.cache_write_tokens || 0))) }
                 ]
             };
         }

@@ -253,6 +253,49 @@ func TestConvertOpenAIToClaudeRequest(t *testing.T) {
 	}
 }
 
+func TestApplyToolReasoningCompat(t *testing.T) {
+	claude := mustJSON(t, `{
+		"model": "gpt-6-sol",
+		"output_config": {"effort": "high", "keep": true},
+		"thinking": {"type": "adaptive"},
+		"tools": [{"name": "get_time", "input_schema": {"type": "object"}}]
+	}`)
+	if !applyToolReasoningCompat(claude, "gpt-6-sol", false) {
+		t.Fatal("expected Anthropic body to be modified")
+	}
+	oc := asMap(claude["output_config"])
+	if oc["effort"] != "none" || oc["keep"] != true {
+		t.Errorf("output_config = %#v, want effort=none and keep preserved", oc)
+	}
+	if asMap(claude["thinking"])["type"] != "adaptive" {
+		t.Errorf("thinking should be preserved, got %#v", claude["thinking"])
+	}
+
+	glm := mustJSON(t, `{"model":"glm-5.3","output_config":{"effort":"high"},"tools":[{"name":"x"}]}`)
+	if applyToolReasoningCompat(glm, "glm-5.3", false) {
+		t.Error("non-reasoning-limit model must not be modified")
+	}
+
+	// gpt-6.1-* 不支持 reasoning_effort=none，不能强行改写
+	gpt61 := mustJSON(t, `{"model":"gpt-6.1-sol","output_config":{"effort":"high"},"tools":[{"name":"x"}]}`)
+	if applyToolReasoningCompat(gpt61, "gpt-6.1-sol", false) {
+		t.Error("gpt-6.1 must not be modified to effort=none")
+	}
+
+	noTools := mustJSON(t, `{"model":"gpt-6-sol","output_config":{"effort":"high"}}`)
+	if applyToolReasoningCompat(noTools, "gpt-6-sol", false) {
+		t.Error("requests without tools must not be modified")
+	}
+
+	openai := mustJSON(t, `{"model":"gpt-6-sol","reasoning_effort":"high","tools":[{"type":"function"}]}`)
+	if !applyToolReasoningCompat(openai, "gpt-6-sol", true) {
+		t.Fatal("expected OpenAI body to be modified")
+	}
+	if openai["reasoning_effort"] != "none" {
+		t.Errorf("reasoning_effort = %v, want none", openai["reasoning_effort"])
+	}
+}
+
 func TestConvertOpenAIToClaudeRequestDefaultMaxTokens(t *testing.T) {
 	out := convertOpenAIToClaudeRequest(mustJSON(t, `{"model":"gpt","messages":[]}`))
 	if got, _ := asInt(out["max_tokens"]); got != defaultClaudeMaxTokens {
@@ -333,7 +376,7 @@ func TestStreamOpenAIToClaude(t *testing.T) {
 		`{"id":"msg_1","model":"gpt-6","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calc","arguments":""}}]},"finish_reason":null}]}`,
 		`{"id":"msg_1","model":"gpt-6","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"x\":1}"}}]},"finish_reason":null}]}`,
 		`{"id":"msg_1","model":"gpt-6","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-		`{"id":"msg_1","model":"gpt-6","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+		`{"id":"msg_1","model":"gpt-6","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}`,
 	} {
 		frames = append(frames, s.Feed(chunk)...)
 	}
@@ -359,9 +402,9 @@ func TestStreamOpenAIToClaude(t *testing.T) {
 	if strings.Count(all, "content_block_stop") < 2 {
 		t.Errorf("expected text and tool blocks to be closed, got:\n%s", all)
 	}
-	in, out := s.Usage()
-	if in != 10 || out != 5 {
-		t.Errorf("usage = (%d,%d), want (10,5)", in, out)
+	in, out, cacheRead, cacheWrite := s.Usage()
+	if in != 6 || out != 5 || cacheRead != 4 || cacheWrite != 0 {
+		t.Errorf("usage = (%d,%d,%d,%d), want (6,5,4,0)", in, out, cacheRead, cacheWrite)
 	}
 	if s.ModelName() != "gpt-6" {
 		t.Errorf("model = %q", s.ModelName())
@@ -379,7 +422,7 @@ func TestStreamClaudeToOpenAI(t *testing.T) {
 	s := newClaudeToOpenAIStream()
 	var frames []string
 	for _, event := range []string{
-		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":10,"output_tokens":0}}}`,
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":6,"cache_creation_input_tokens":2}}}`,
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
 		`{"type":"content_block_stop","index":0}`,
@@ -401,18 +444,19 @@ func TestStreamClaudeToOpenAI(t *testing.T) {
 		`"name":"calc"`,
 		`"arguments":"{\"x\":1}"`,
 		`"finish_reason":"tool_calls"`,
-		`"prompt_tokens":10`,
+		`"prompt_tokens":18`,
 		`"completion_tokens":4`,
-		`"total_tokens":14`,
+		`"total_tokens":22`,
+		`"cached_tokens":6`,
 		"data: [DONE]",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing frame fragment %q in stream output", want)
 		}
 	}
-	in, out := s.Usage()
-	if in != 10 || out != 4 {
-		t.Errorf("usage = (%d,%d), want (10,4)", in, out)
+	in, out, cacheRead, cacheWrite := s.Usage()
+	if in != 10 || out != 4 || cacheRead != 6 || cacheWrite != 2 {
+		t.Errorf("usage = (%d,%d,%d,%d), want (10,4,6,2)", in, out, cacheRead, cacheWrite)
 	}
 	if s.ModelName() != "claude" {
 		t.Errorf("model = %q", s.ModelName())
