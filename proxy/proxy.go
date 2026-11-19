@@ -81,17 +81,94 @@ func buildModelsListResponse(mappings []config.ModelMapping) openAIModelsList {
 	return openAIModelsList{Object: "list", Data: data}
 }
 
-// listModelsForKey 处理 GET /v1/models — 按 Bearer key 返回该 key 可见的、目标 provider
-// 处于 active 状态的映射目标模型。响应形状兼容 OpenAI /v1/models。
-func listModelsForKey(c *gin.Context) {
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
-		return
+// anthropicModelEntry 是 Anthropic /v1/models 的 data[] 元素形状。
+type anthropicModelEntry struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// anthropicModelsList 是 Anthropic /v1/models 顶层响应的 JSON 形状。
+type anthropicModelsList struct {
+	Data    []anthropicModelEntry `json:"data"`
+	HasMore bool                  `json:"has_more"`
+	FirstID string                `json:"first_id"`
+	LastID  string                `json:"last_id"`
+}
+
+// buildAnthropicModelsList 把映射转成 Anthropic /v1/models 响应形状。
+// Anthropic SDK 的 client.models.list() 解析的是这个结构，与 OpenAI 的
+// {"object":"list","data":[...]} 不兼容，所以必须按请求头分别返回。
+//   - id 用 UserModel（客户端拿它调网关）；
+//   - display_name 也先直接用 UserModel（网关没有单独的展示名配置）；
+//   - created_at 取映射创建时间，非法/缺失时回退当前时间；
+//   - data 始终非 nil，空列表序列化为 [] 而非 null。
+func buildAnthropicModelsList(mappings []config.ModelMapping) anthropicModelsList {
+	createdAt := make(map[string]string, len(mappings))
+	ids := make([]string, 0, len(mappings))
+	for _, m := range mappings {
+		if m.UserModel == "" {
+			continue
+		}
+		if _, ok := createdAt[m.UserModel]; ok {
+			continue
+		}
+		createdAt[m.UserModel] = m.CreatedAt
+		ids = append(ids, m.UserModel)
 	}
-	providedKey := authHeader
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		providedKey = strings.TrimPrefix(authHeader, "Bearer ")
+	sort.Strings(ids)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	data := make([]anthropicModelEntry, 0, len(ids))
+	for _, id := range ids {
+		created := createdAt[id]
+		if _, err := time.Parse(time.RFC3339, created); err != nil {
+			created = now
+		}
+		data = append(data, anthropicModelEntry{
+			Type:        "model",
+			ID:          id,
+			DisplayName: id,
+			CreatedAt:   created,
+		})
+	}
+
+	resp := anthropicModelsList{Data: data, HasMore: false}
+	if len(ids) > 0 {
+		resp.FirstID = ids[0]
+		resp.LastID = ids[len(ids)-1]
+	}
+	return resp
+}
+
+// extractServerKey 提取客户端提交的网关密钥，兼容两种客户端习惯：
+//   - Authorization: Bearer sk-xxxx（OpenAI SDK）
+//   - Authorization: sk-xxxx
+//   - x-api-key: sk-xxxx（Anthropic SDK / Claude Code 的默认方式）
+//
+// Authorization 优先；返回空字符串表示客户端没有提供任何密钥。
+func extractServerKey(c *gin.Context) string {
+	if authHeader := strings.TrimSpace(c.GetHeader("Authorization")); authHeader != "" {
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			authHeader = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		}
+		if authHeader != "" {
+			return authHeader
+		}
+	}
+	return strings.TrimSpace(c.GetHeader("x-api-key"))
+}
+
+// listModelsForKey 处理 GET /v1/models — 按网关密钥返回该 key 可见的、目标 provider
+// 处于 active 状态的映射目标模型。响应形状按客户端协议区分：
+//   - 带 anthropic-version 头（Anthropic SDK / Claude Code）→ Anthropic 形状；
+//   - 其余（OpenAI SDK）→ OpenAI 形状。
+func listModelsForKey(c *gin.Context) {
+	providedKey := extractServerKey(c)
+	if providedKey == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header or x-api-key"})
+		return
 	}
 	keyID, isValid := config.GetConfig().ValidateServerKey(providedKey)
 	if !isValid {
@@ -100,6 +177,12 @@ func listModelsForKey(c *gin.Context) {
 	}
 
 	mappings := config.GetConfig().GetActiveMappingsForKey(keyID)
+	// Anthropic SDK 必带 anthropic-version（`client.models.list()` 也带），
+	// OpenAI SDK 不会带，用它作为协议判别信号最稳定。
+	if c.GetHeader("anthropic-version") != "" {
+		c.JSON(http.StatusOK, buildAnthropicModelsList(mappings))
+		return
+	}
 	c.JSON(http.StatusOK, buildModelsListResponse(mappings))
 }
 
@@ -407,17 +490,11 @@ func proxyHandler(c *gin.Context) {
 		return
 	}
 
-	// 验证服务器密钥
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
+	// 验证服务器密钥：Authorization（Bearer/裸 key）与 x-api-key 均可
+	providedKey := extractServerKey(c)
+	if providedKey == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header or x-api-key"})
 		return
-	}
-
-	// 支持 "Bearer sk-xxxx" 或 "sk-xxxx" 格式
-	providedKey := authHeader
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		providedKey = strings.TrimPrefix(authHeader, "Bearer ")
 	}
 
 	// 验证密钥并获取密钥ID
@@ -581,8 +658,10 @@ func proxyHandler(c *gin.Context) {
 
 	// 复制请求头，但替换 API Key
 	for key, values := range c.Request.Header {
-		if key == "Authorization" {
-			continue // 跳过原始的 Authorization
+		// 跳过客户端的网关凭证：Authorization 与 x-api-key 都可能是我们的 key，
+		// 绝不能原样透传给上游，否则会把网关密钥泄露给服务商。
+		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Api-Key") {
+			continue
 		}
 		for _, value := range values {
 			req.Header.Add(key, value)

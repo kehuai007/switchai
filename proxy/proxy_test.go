@@ -52,6 +52,50 @@ func TestBuildModelsListResponse_DedupesAndExposesUserModel(t *testing.T) {
 	}
 }
 
+// TestBuildAnthropicModelsList_Shape 守护 Anthropic SDK `client.models.list()`
+// 期望的结构：type / id / display_name / created_at + has_more/first_id/last_id。
+func TestBuildAnthropicModelsList_Shape(t *testing.T) {
+	mappings := []config.ModelMapping{
+		{UserModel: "opus", ProviderModel: "claude-opus", CreatedAt: "2026-01-02T03:04:05Z"},
+		{UserModel: "fast", ProviderModel: "claude-haiku", CreatedAt: "2026-01-01T00:00:00Z"},
+		{UserModel: "fast", ProviderModel: "claude-haiku-2", CreatedAt: "2026-01-03T00:00:00Z"},
+	}
+
+	resp := buildAnthropicModelsList(mappings)
+	if resp.HasMore {
+		t.Errorf("has_more = true, want false")
+	}
+	if resp.FirstID != "fast" || resp.LastID != "opus" {
+		t.Errorf("first_id/last_id = %q/%q, want fast/opus", resp.FirstID, resp.LastID)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("got %d data entries, want 2", len(resp.Data))
+	}
+	if resp.Data[0].ID != "fast" || resp.Data[1].ID != "opus" {
+		t.Errorf("data ids = %q,%q, want fast,opus", resp.Data[0].ID, resp.Data[1].ID)
+	}
+	for i, e := range resp.Data {
+		if e.Type != "model" {
+			t.Errorf("data[%d].type = %q, want model", i, e.Type)
+		}
+		if e.DisplayName != e.ID {
+			t.Errorf("data[%d].display_name = %q, want %q", i, e.DisplayName, e.ID)
+		}
+		if _, err := time.Parse(time.RFC3339, e.CreatedAt); err != nil {
+			t.Errorf("data[%d].created_at = %q, not RFC3339", i, e.CreatedAt)
+		}
+	}
+
+	// 空输入必须是 [] 而非 null
+	empty := buildAnthropicModelsList(nil)
+	if empty.Data == nil {
+		t.Errorf("empty Data is nil")
+	}
+	if empty.FirstID != "" || empty.LastID != "" {
+		t.Errorf("empty first/last = %q/%q, want empty", empty.FirstID, empty.LastID)
+	}
+}
+
 // TestBuildModelsListResponse_EmptyInput 返回空 data slice，handler 直接序列化空数组而非 null。
 func TestBuildModelsListResponse_EmptyInput(t *testing.T) {
 	resp := buildModelsListResponse(nil)
@@ -182,6 +226,61 @@ func TestListModelsForKey_EndToEnd(t *testing.T) {
 	if !reflect.DeepEqual(ids, want) {
 		t.Errorf("data ids = %v, want %v", want, ids)
 	}
+
+	// 4) x-api-key 头（Anthropic SDK / Claude Code 默认方式）→ 200
+	reqX := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqX.Header.Set("x-api-key", rawKey)
+	wx := httptest.NewRecorder()
+	r.ServeHTTP(wx, reqX)
+	if wx.Code != http.StatusOK {
+		t.Errorf("x-api-key: got status %d, want 200; body=%s", wx.Code, wx.Body.String())
+	}
+
+	// 5) 错误 x-api-key → 401
+	reqBadX := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqBadX.Header.Set("x-api-key", "sk-wrong")
+	wbx := httptest.NewRecorder()
+	r.ServeHTTP(wbx, reqBadX)
+	if wbx.Code != http.StatusUnauthorized {
+		t.Errorf("bad x-api-key: got status %d, want 401; body=%s", wbx.Code, wbx.Body.String())
+	}
+
+	// 6) 带 anthropic-version → Anthropic 形状（SDK models.list() 能解析）
+	reqA := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqA.Header.Set("x-api-key", rawKey)
+	reqA.Header.Set("anthropic-version", "2023-06-01")
+	wa := httptest.NewRecorder()
+	r.ServeHTTP(wa, reqA)
+	if wa.Code != http.StatusOK {
+		t.Fatalf("anthropic models: got status %d, want 200; body=%s", wa.Code, wa.Body.String())
+	}
+	var anthropicResp struct {
+		Data []struct {
+			Type        string `json:"type"`
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			CreatedAt   string `json:"created_at"`
+		} `json:"data"`
+		HasMore bool   `json:"has_more"`
+		FirstID string `json:"first_id"`
+		LastID  string `json:"last_id"`
+	}
+	if err := json.Unmarshal(wa.Body.Bytes(), &anthropicResp); err != nil {
+		t.Fatalf("anthropic body unmarshal: %v\nbody: %s", err, wa.Body.String())
+	}
+	if len(anthropicResp.Data) != 2 {
+		t.Fatalf("anthropic data len = %d, want 2; body=%s", len(anthropicResp.Data), wa.Body.String())
+	}
+	if anthropicResp.Data[0].Type != "model" || anthropicResp.Data[0].ID != "alias-1" {
+		t.Errorf("anthropic data[0] = %+v, want type=model id=alias-1", anthropicResp.Data[0])
+	}
+	if anthropicResp.FirstID != "alias-1" || anthropicResp.LastID != "alias-2" {
+		t.Errorf("anthropic first/last = %q/%q, want alias-1/alias-2", anthropicResp.FirstID, anthropicResp.LastID)
+	}
+	// 不应混入 OpenAI 顶层字段
+	if strings.Contains(wa.Body.String(), `"object":"list"`) || strings.Contains(wa.Body.String(), `"owned_by"`) {
+		t.Errorf("anthropic response contains OpenAI fields: %s", wa.Body.String())
+	}
 }
 
 // TestListModelsForKey_NoMappings 验证 key 没有映射时返回空 data 数组（而非 null）。
@@ -244,6 +343,7 @@ func findKeyIDByKey(cfg *config.Config, key string) string {
 	}
 	return ""
 }
+
 // TestBuildModelsListResponseJSONShape 守护对外 JSON 字段名兼容 OpenAI /v1/models。
 // 任何字段重命名都会让下游 OpenAI 客户端解析失败。
 func TestBuildModelsListResponseJSONShape(t *testing.T) {
@@ -455,5 +555,52 @@ func TestProxy_QuotaBlocked_ToggleOff(t *testing.T) {
 	}
 	if hits == 0 {
 		t.Errorf("toggle off: request should have reached upstream, hits=0")
+	}
+}
+
+// TestProxy_XAPIKeyAuth 验证 Anthropic 风格的 x-api-key 也能通过网关鉴权，
+// 同时网关密钥绝不能透传给上游（上游只应看到 provider 自己的 Bearer key）。
+func TestProxy_XAPIKeyAuth(t *testing.T) {
+	cfg, rawKey := setupQuotaTestEnv(t)
+
+	var gotAuth, gotXAPIKey string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotXAPIKey = r.Header.Get("x-api-key")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	if err := cfg.AddProvider(config.Provider{
+		ID: "xkey-provider", Name: "XKey", BaseURL: upstream.URL, APIKey: "provider-secret",
+		Model: "m", IsActive: true, CreatedAt: "2026-01-01T00:00:00Z", Order: 1,
+		IsOpenAIFormat: true,
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	keyID := findKeyIDByKey(cfg, rawKey)
+	if _, err := cfg.AddMapping(keyID, config.ModelMapping{
+		UserModel: "alias-xkey", ProviderID: "xkey-provider", ProviderModel: "m",
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddMapping: %v", err)
+	}
+
+	body := `{"model":"alias-xkey","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("x-api-key", rawKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newTestEngine().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("x-api-key request: got status %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if gotAuth != "Bearer provider-secret" {
+		t.Errorf("upstream Authorization = %q, want provider Bearer key", gotAuth)
+	}
+	if gotXAPIKey != "" {
+		t.Errorf("upstream received client x-api-key = %q; gateway key must not be forwarded", gotXAPIKey)
 	}
 }
