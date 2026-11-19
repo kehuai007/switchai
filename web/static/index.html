@@ -1263,6 +1263,16 @@
             userModelInput.addEventListener('blur', autoSave);
             providerSelect.addEventListener('change', function() {
                 modelSelect.innerHTML = renderProviderModelOptions(this.value, '');
+                // 选择供应商后模型下拉只是列出了选项，浏览器不会触发它的 change，
+                // 导致用户模型名一直是空的、映射无法保存。这里直接选中第一个模型
+                // 并同步到用户模型名（用户模型名已有内容时不覆盖，留待用户自己选）。
+                if (!userModelInput.value.trim()) {
+                    const firstModel = Array.from(modelSelect.options).find(o => o.value);
+                    if (firstModel) {
+                        modelSelect.value = firstModel.value;
+                        userModelInput.value = firstModel.value;
+                    }
+                }
                 autoSave();
             });
             modelSelect.addEventListener('change', function() {
@@ -1336,11 +1346,15 @@
         }
 
         function renderProviderModelOptions(providerId, selected) {
-            if (!providerId) return '';
+            if (!providerId) return '<option value="">-- 先选择服务商 --</option>';
             const p = providers.find(x => x.id === providerId);
-            if (!p) return '';
+            if (!p) return '<option value="">-- 先选择服务商 --</option>';
             const models = (p.model || '').split(';').map(s => s.trim()).filter(s => s);
-            return models.map(m => `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`).join('');
+            if (models.length === 0) return '<option value="">-- 该服务商无模型 --</option>';
+            // 必须保留空占位：否则第一个模型会被浏览器默认选中，
+            // 用户再点同一个模型不会触发 change，自动填充就失效。
+            return '<option value="">-- 选择模型 --</option>' +
+                models.map(m => `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`).join('');
         }
 
         function populateTestModelDropdown() {
